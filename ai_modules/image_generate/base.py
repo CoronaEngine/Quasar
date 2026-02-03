@@ -76,7 +76,7 @@ def _clean_image_parts(original_parts: list[dict]) -> list[dict]:
 
 
 @register_entrance(handler_name="handle_image_generation")
-async def handle_image_generation(payload: Any) -> str:
+def handle_image_generation(payload: Any) -> str:
     """图像生成，返回三层结构。
 
     路由逻辑：
@@ -103,7 +103,7 @@ async def handle_image_generation(payload: Any) -> str:
 
         # 根据是否有 function_id 选择处理路径
         if function_id is not None:
-            return await execute_workflow(
+            return execute_workflow(
                 request_data=request_data,
                 interface_type="image",
             )
