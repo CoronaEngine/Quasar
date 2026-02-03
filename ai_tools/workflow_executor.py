@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 extract_function_id = extract_function_id
 
 
-def execute_workflow(
+async def execute_workflow(
     request_data: Dict[str, Any],
     *,
     interface_type: str = "image",
@@ -106,7 +106,7 @@ def execute_workflow(
             )
             update_session_state(session_id, "running")
             # 执行工作流
-            final_state = workflow.invoke(initial_state)
+            final_state = await workflow.ainvoke(initial_state)
 
             # 检查是否有错误
             if final_state.get("error"):
