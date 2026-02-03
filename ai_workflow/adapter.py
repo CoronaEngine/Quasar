@@ -233,6 +233,19 @@ def format_response(
     # 清洗输出 parts
     cleaned_parts = _clean_output_parts(parts)
 
+    # 将原始 prompt 作为文本部分返回，以便前端展示
+    prompt = state.get("prompt", "")
+    if prompt:
+        # 检查是否已有纯文本部分，避免重复
+        has_text = any(
+            p.get("content_type") == "text" and p.get("content_text") == prompt
+            for p in cleaned_parts
+        )
+        if not has_text:
+            cleaned_parts.insert(
+                0, {"content_type": "text", "content_text": prompt}
+            )
+
     return build_success_response(
         interface_type=interface_type,
         session_id=session_id,

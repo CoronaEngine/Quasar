@@ -206,9 +206,7 @@ def _handle_image_generation_inner(
                 for p in cleaned_parts
             )
             if not has_text:
-                cleaned_parts.insert(
-                    0, {"content_type": "text", "content_text": prompt}
-                )
+                cleaned_parts.insert(0, {"content_type": "text", "content_text": prompt})
 
         # 解析 parts 中的 fileid:// URL（返回真实 OSS URL 给用户）
         from ai_tools.response_adapter import (
