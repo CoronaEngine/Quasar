@@ -52,8 +52,19 @@ class WorkflowState(TypedDict, total=False):
     # 中间输出（图像列表，用于工作流节点间传递）
     output_images: List[Dict[str, Any]]
 
+    # 多场景工作流专用字段
+    is_multimodal: bool  # 是否包含多模态输入（图片）
+    extracted_elements: List[Dict[str, str]]  # analyzer 提取的设计元素
+    approved_elements: List[Dict[str, str]]  # 人审通过的设计元素
+    generated_images: Dict[str, str]  # 生成的图片 {物品名: URL}
+    layout_text: str  # 排版文案
+
+    # 模型检索/生成工作流字段
+    model_results: List[Dict[str, Any]]  # 每个物品的检索/生成结果
+
     # 最终输出
     output_parts: List[Dict[str, Any]]
+    output_llm_content: List[Dict[str, Any]]
 
     # 中间数据（各工作流自定义 key-value）
     intermediate: Dict[str, Any]

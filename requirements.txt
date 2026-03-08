@@ -1,3 +1,6 @@
+# PyTorch CUDA 12.1 (兼容所有 NVIDIA RTX 系列 GPU)
+--extra-index-url https://download.pytorch.org/whl/cu128
+
 dashscope
 langchain_core
 
@@ -22,3 +25,12 @@ langchain-openai
 langchain-mcp-adapters
 langsmith
 google-genai
+
+# Object Recognition (Qwen3-VL-Embedding + sqlite-vec)
+torch
+torchvision
+transformers
+bitsandbytes
+accelerate
+sqlite-vec
+numpy

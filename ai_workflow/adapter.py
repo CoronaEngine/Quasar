@@ -215,6 +215,15 @@ def format_response(
             metadata=metadata,
         )
 
+    llm_content = state.get("output_llm_content", [])
+    if llm_content:
+        return build_success_response(
+            interface_type=interface_type,
+            session_id=session_id,
+            metadata=metadata,
+            llm_content=llm_content,
+        )
+
     # 优先使用 output_parts
     parts = state.get("output_parts", [])
 

@@ -210,6 +210,19 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     )
 
 # -----------------------------------------------------------------------
+#  物体识别工具（Qwen3-VL-Embedding + sqlite-vec）
+# -----------------------------------------------------------------------
+    from ai_modules.object_recognition.tools.recognition_tools import load_recognition_tools
+
+    registry.register_loader(
+        loader=load_recognition_tools,
+        category=ToolCategory.SCENE,
+        dependencies=[],
+        requires_config=True,
+        source="tools.recognition_tools",
+    )
+
+# -----------------------------------------------------------------------
 #  场景拆解工具（breakdown）
 # -----------------------------------------------------------------------
     from ai_modules.scene_breakdown.tools.scene_breakdown_tools import load_scene_breakdown_tools

@@ -31,7 +31,7 @@ AI模块加载，根据ai功能划分模块并通过配置实现动态加载
   - settings配置
     - 保存ai设置
     - @ai_entrance.collector.register_setting(str)
-  - loader生成 
+  - loader生成
     - 获取保存的ai设置并通过函数将config集成进AIConfig中(需要注册settings)
     - @ai_entrance.collector.register_loader(str)
 
@@ -46,13 +46,13 @@ AI模块加载，根据ai功能划分模块并通过配置实现动态加载
       def handle_text_generation(payload: Any)
     - ai_entrance().handle_text_generation(payload)
 
-
 ---
 
-# 其他模块
+## 其他模块
+
 - ai_agent/ 会话存储
 - ai_media_resource/ 文件处理
 - ai_workflow/ 工作流
 - ai_models/
-- ai_config/ 
+- ai_config/
 - ai_tools/ 工具

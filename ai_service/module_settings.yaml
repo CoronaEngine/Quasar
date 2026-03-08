@@ -64,7 +64,11 @@ modules:
     enabled: true
     description: "场景布置"
 
-  # 检测模块
+  # 识别与检测模块
+  - name: object_recognition
+    enabled: true
+    description: "物体识别（六面图嵌入 + 向量检索）"
+
   - name: detection
     enabled: true
     description: "目标检测接口"

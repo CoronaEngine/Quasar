@@ -15,6 +15,7 @@ from ai_agent.executor import (
     stream_agent,
 )
 from ai_agent.interface import process_chat_request
+from ai_workflow.executor import run_workflow_from_request, stream_workflow_from_request
 from ai_config.ai_config import get_ai_config
 from ai_tools.common import (
     ensure_dict,
@@ -154,6 +155,14 @@ def _handle_integrated_entrance_inner(
         llm_content = request_data.get("llm_content", [])
         if not isinstance(llm_content, list) or not llm_content:
             raise ValueError("llm_content 不能为空")
+
+        workflow_response = run_workflow_from_request(
+            request_data,
+            interface_type="integrated",
+        )
+        if workflow_response is not None:
+            logger.info("integrated 请求命中 workflow 路由")
+            return workflow_response
 
         # 运行 Agent
         result = process_chat_request(request_data)
@@ -331,6 +340,15 @@ def _handle_integrated_entrance_stream_inner(
         llm_content = request_data.get("llm_content", [])
         if not isinstance(llm_content, list) or not llm_content:
             raise ValueError("llm_content 不能为空")
+
+        workflow_stream = stream_workflow_from_request(
+            request_data,
+            interface_type="integrated",
+        )
+        if workflow_stream is not None:
+            logger.info("integrated stream 请求命中 workflow 路由（流式）")
+            yield from workflow_stream
+            return
 
         # 获取 session_id 和准备历史
         from ai_agent.protocol import (
