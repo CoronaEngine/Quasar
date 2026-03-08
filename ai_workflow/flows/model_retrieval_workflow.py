@@ -1,7 +1,7 @@
 """
 第二步工作流：模型检索与 3D 生成（LangGraph DAG）
 
-接收第一步（多场景室内设计工作流）的输出状态，对每个物品：
+接收第一步（多场景室内设计工作流）的输出状态，对每个物体：
   1. 使用 object_recognition 模块检索已有 3D 模型
   2. 若检索命中（distance < 阈值），记录模型 ID
   3. 若未命中，调用 three_d_generate 模块生成新 3D 模型
@@ -15,16 +15,21 @@ DAG 拓扑：
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import json
 import logging
+import re
 import time
 from typing import Any, Dict, List, TYPE_CHECKING
+
+import numpy as np
 
 from langgraph.graph import END, START, StateGraph
 
 from ai_config.ai_config import get_ai_config
 from ai_tools.registry import get_tool_registry
 from ai_workflow.state import WorkflowState
+from config.app_config import get_app_config
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
@@ -35,6 +40,16 @@ MODEL_RETRIEVAL_FUNCTION_ID = 21002
 
 # 检索距离阈值：低于此值视为命中
 SEARCH_DISTANCE_THRESHOLD = 0.3
+
+
+def _normalize_object_id(name: str, fallback_index: int) -> str:
+    """将物体名转换为 object_id 友好的目录名。"""
+    cleaned = re.sub(r"\s+", "_", (name or "").strip())
+    cleaned = re.sub(r"[^0-9A-Za-z_\-\u4e00-\u9fff]", "_", cleaned)
+    cleaned = cleaned.strip("_")
+    if not cleaned:
+        cleaned = f"object_{fallback_index:02d}"
+    return cleaned[:64]
 
 # ---------------------------------------------------------------------------
 # 工具获取
@@ -111,15 +126,66 @@ def _parse_3d_result(raw_result: Any) -> Dict[str, Any]:
     try:
         parsed = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
         parts = parsed["llm_content"][0]["part"]
+        model_path = ""
+        parameter: Dict[str, Any] = {}
+        preview_paths: List[str] = []
         for part in parts:
-            if part.get("content_type") == "file":
-                return {
-                    "model_path": part.get("content_text", ""),
-                    "parameter": part.get("parameter", {}),
-                }
+            content_type = part.get("content_type")
+            if content_type == "file" and not model_path:
+                model_path = part.get("content_text", "")
+                parameter = part.get("parameter", {}) or {}
+            elif content_type == "image":
+                preview_path = part.get("content_text") or part.get("content_url") or ""
+                if preview_path:
+                    preview_paths.append(preview_path)
+
+        if model_path:
+            if preview_paths:
+                parameter = {**parameter, "preview_paths": preview_paths}
+            return {
+                "model_path": model_path,
+                "parameter": parameter,
+            }
     except (json.JSONDecodeError, KeyError, IndexError, TypeError):
         pass
     return {}
+
+
+def _get_recognition_db_config() -> Dict[str, Any]:
+    """读取 object_recognition 向量库配置，提供 register_node 使用。"""
+    cfg = get_ai_config()
+    raw = getattr(cfg, "object_recognition", None)
+
+    db_path = str(get_app_config().paths.object_recognition_db)
+    vector_dim = 1024
+
+    if isinstance(raw, dict):
+        vector_cfg = raw.get("vector_db", {}) or {}
+        db_path = str(vector_cfg.get("db_path", db_path))
+        vector_dim = int(vector_cfg.get("vector_dim", vector_dim))
+    elif raw is not None:
+        vector_cfg = getattr(raw, "vector_db", None)
+        if vector_cfg is not None:
+            db_path = str(getattr(vector_cfg, "db_path", db_path))
+            vector_dim = int(getattr(vector_cfg, "vector_dim", vector_dim))
+
+    return {
+        "db_path": db_path,
+        "vector_dim": vector_dim,
+    }
+
+
+def _build_placeholder_embedding(object_id: str, model_path: str, vector_dim: int) -> np.ndarray:
+    """生成可复现的伪向量，先打通入库流程，后续可替换为六面图真实嵌入。"""
+    seed_text = f"{object_id}|{model_path}"
+    seed_bytes = hashlib.sha256(seed_text.encode("utf-8")).digest()[:8]
+    seed = int.from_bytes(seed_bytes, byteorder="big", signed=False)
+    rng = np.random.default_rng(seed)
+    vec = rng.standard_normal(vector_dim).astype(np.float32)
+    norm = np.linalg.norm(vec)
+    if norm > 1e-12:
+        vec = vec / norm
+    return vec
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +194,9 @@ def _parse_3d_result(raw_result: Any) -> Dict[str, Any]:
 
 
 def dispatch_node(state: WorkflowState) -> Dict[str, Any]:
-    """从第一步的输出中组装每个物品的检索/生成任务。
+    """从第一步的输出中组装每个物体的检索/生成任务。
 
-    读取 approved_elements 与 generated_images，为每个有图片的物品
+    读取 approved_elements 与 generated_images，为每个有图片的物体
     创建 {item_name, image_url, image_prompt} 任务项。
     """
     if state.get("error"):
@@ -143,20 +209,22 @@ def dispatch_node(state: WorkflowState) -> Dict[str, Any]:
         return {"error": "无可处理的设计元素（第一步输出为空）"}
 
     tasks: List[Dict[str, str]] = []
-    for elem in approved:
+    for idx, elem in enumerate(approved, start=1):
         name = elem.get("item_name", "")
         image_url = generated_images.get(name, "")
         if not image_url:
             logger.warning(f"[Workflow][dispatch] {name} 无生成图片，跳过")
             continue
+        object_id = _normalize_object_id(name, idx)
         tasks.append({
             "item_name": name,
+            "object_id": object_id,
             "image_url": image_url,
             "image_prompt": elem.get("image_prompt", ""),
         })
 
     if not tasks:
-        return {"error": "所有物品均无生成图片，无法进行模型检索"}
+        return {"error": "所有物体均无生成图片，无法进行模型检索"}
 
     logger.info(f"[Workflow][dispatch] 组装 {len(tasks)} 个检索/生成任务")
     return {
@@ -177,12 +245,13 @@ def _process_single_item(
     search_tool: Any,
     generate_tool: Any,
 ) -> Dict[str, Any]:
-    """处理单个物品：先检索，未命中则生成。
+    """处理单个物体：先检索，未命中则生成。
 
     Returns:
         {item_name, source, object_id?, model_path?, parameter?, error?}
     """
     name = task["item_name"]
+    object_id = task.get("object_id", "")
     image_url = task["image_url"]
     image_prompt = task.get("image_prompt", "")
 
@@ -226,14 +295,17 @@ def _process_single_item(
             raw = generate_tool.invoke({
                 "mode": "image_to_3d",
                 "images": [image_url],
+                "object_id": object_id,
             })
             model_info = _parse_3d_result(raw)
 
             if model_info:
                 result.update({
                     "source": "generation",
+                    "object_id": object_id,
                     "model_path": model_info.get("model_path", ""),
                     "parameter": model_info.get("parameter", {}),
+                    "input_image_url": image_url,
                 })
                 logger.info(
                     f"[Workflow][generate] {name} 3D 模型生成完成: "
@@ -254,7 +326,7 @@ def _process_single_item(
 
 
 def retrieve_or_generate_node(state: WorkflowState) -> Dict[str, Any]:
-    """对每个物品并发执行：检索已有 3D 模型，未命中则生成新模型。"""
+    """对每个物体并发执行：检索已有 3D 模型，未命中则生成新模型。"""
     if state.get("error"):
         return {}
 
@@ -313,19 +385,128 @@ def retrieve_or_generate_node(state: WorkflowState) -> Dict[str, Any]:
 
 
 def register_node(state: WorkflowState) -> Dict[str, Any]:
-    """入库登记节点（占位）。
+    """入库登记节点（临时实现）。
 
-    TODO: 后续实现将生成的 3D 模型通过 store_object 写入向量库。
-    当前仅透传 model_results，不做额外处理。
+    在六面图嵌入能力就绪前，先为生成结果创建/更新 object_recognition 记录：
+    - object_metadata: 名称、分类、图片路径等
+    - object_vectors: 使用可复现伪向量占位
     """
     if state.get("error"):
         return {}
 
     model_results = state.get("model_results", [])
-    logger.info(
-        f"[Workflow][register] 占位节点：{len(model_results)} 个物品待登记"
+    if not model_results:
+        return {}
+
+    from ai_modules.object_recognition.tools.vector_db import VectorDB
+
+    cfg = _get_recognition_db_config()
+    vector_db = VectorDB(
+        db_path=cfg["db_path"],
+        vector_dim=cfg["vector_dim"],
     )
-    return {}
+
+    inserted_count = 0
+    updated_count = 0
+    failed_count = 0
+    skipped_count = 0
+    enriched_results: List[Dict[str, Any]] = []
+
+    try:
+        for idx, row in enumerate(model_results, start=1):
+            item = dict(row)
+
+            if row.get("source") != "generation" or row.get("error"):
+                item["register_status"] = "skipped"
+                skipped_count += 1
+                enriched_results.append(item)
+                continue
+
+            object_id = row.get("object_id") or _normalize_object_id(row.get("item_name", ""), idx)
+            model_path = row.get("model_path", "")
+            parameter = row.get("parameter", {}) if isinstance(row.get("parameter"), dict) else {}
+
+            image_paths: List[str] = []
+            preview_paths = parameter.get("preview_paths", [])
+            if isinstance(preview_paths, list):
+                image_paths.extend([str(p) for p in preview_paths if p])
+
+            input_image_url = row.get("input_image_url", "")
+            if input_image_url:
+                image_paths.append(str(input_image_url))
+
+            # 去重并保持顺序
+            seen = set()
+            dedup_paths = []
+            for p in image_paths:
+                if p not in seen:
+                    seen.add(p)
+                    dedup_paths.append(p)
+
+            embedding = _build_placeholder_embedding(
+                object_id=object_id,
+                model_path=model_path,
+                vector_dim=cfg["vector_dim"],
+            )
+
+            try:
+                existing = vector_db.get_object(object_id)
+                if existing is None:
+                    rowid = vector_db.insert_object(
+                        object_id=object_id,
+                        embedding=embedding,
+                        name=row.get("item_name", ""),
+                        category="generated_3d",
+                        image_paths=dedup_paths,
+                        description=f"placeholder_embedding: {model_path}",
+                    )
+                    item["register_status"] = "inserted"
+                    item["register_rowid"] = rowid
+                    inserted_count += 1
+                else:
+                    updated = vector_db.update_object(
+                        object_id=object_id,
+                        embedding=embedding,
+                        name=row.get("item_name", ""),
+                        category="generated_3d",
+                        image_paths=dedup_paths,
+                        description=f"placeholder_embedding: {model_path}",
+                    )
+                    if updated:
+                        item["register_status"] = "updated"
+                        updated_count += 1
+                    else:
+                        item["register_status"] = "failed"
+                        item["register_error"] = "更新失败"
+                        failed_count += 1
+            except Exception as e:  # noqa: BLE001
+                item["register_status"] = "failed"
+                item["register_error"] = str(e)
+                failed_count += 1
+
+            item["object_id"] = object_id
+            enriched_results.append(item)
+    finally:
+        vector_db.close()
+
+    logger.info(
+        "[Workflow][register] 完成: inserted=%s, updated=%s, skipped=%s, failed=%s",
+        inserted_count,
+        updated_count,
+        skipped_count,
+        failed_count,
+    )
+
+    return {
+        "model_results": enriched_results,
+        "intermediate": {
+            **state.get("intermediate", {}),
+            "register_inserted": inserted_count,
+            "register_updated": updated_count,
+            "register_skipped": skipped_count,
+            "register_failed": failed_count,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +542,7 @@ def format_result_node(state: WorkflowState) -> Dict[str, Any]:
             )
         elif source == "generation":
             model_path = r.get("model_path", "")
+            register_status = r.get("register_status", "")
             if error:
                 md_parts.append(
                     f"### {name}\n"
@@ -368,10 +550,14 @@ def format_result_node(state: WorkflowState) -> Dict[str, Any]:
                     f"- **状态**: ⚠️ {error}\n"
                 )
             else:
+                register_line = ""
+                if register_status:
+                    register_line = f"- **入库状态**: {register_status}\n"
                 md_parts.append(
                     f"### {name}\n"
                     f"- **来源**: 3D 生成\n"
                     f"- **模型文件**: {model_path}\n"
+                    f"{register_line}"
                 )
         else:
             md_parts.append(f"### {name}\n- **状态**: 未知\n")
@@ -385,7 +571,7 @@ def format_result_node(state: WorkflowState) -> Dict[str, Any]:
     error_count = sum(1 for r in model_results if r.get("error"))
 
     md_parts.append(
-        f"\n---\n**汇总**: 共 {len(model_results)} 个物品 — "
+        f"\n---\n**汇总**: 共 {len(model_results)} 个物体 — "
         f"检索命中 {retrieval_count}, "
         f"3D 生成 {generation_count}, "
         f"失败 {error_count}"

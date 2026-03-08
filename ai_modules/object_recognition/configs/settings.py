@@ -9,13 +9,15 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from ai_service.entrance import ai_entrance
+from config.app_config import get_app_config
 
 
 @ai_entrance.collector.register_setting("object_recognition")
 def OBJECT_RECOGNITION_SETTINGS() -> Dict[str, Any]:
     """物体识别模块的默认配置"""
+    db_path = str(get_app_config().paths.object_recognition_db)
     return {
-        "enable": False,
+        "enable": True,
         "embedding": {
             "model_size": "2B",
             "output_dim": 1024,
@@ -25,7 +27,7 @@ def OBJECT_RECOGNITION_SETTINGS() -> Dict[str, Any]:
             "device_map": "auto",
         },
         "vector_db": {
-            "db_path": "./object_recognition.db",
+            "db_path": db_path,
             "vector_dim": 1024,
             "default_top_k": 5,
         },

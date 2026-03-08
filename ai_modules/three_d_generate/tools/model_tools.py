@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
 import time
 import httpx
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
@@ -12,6 +12,7 @@ from langchain_core.tools import StructuredTool
 from ai_config.ai_config import AIConfig
 from ai_media_resource import get_media_registry
 from ai_tools.response_adapter import build_part, build_success_result, build_error_result
+from config.app_config import get_app_config
 
 from ai_modules.three_d_generate.tools.client_3d import Rodin3DClient
 
@@ -80,6 +81,16 @@ def _download_url_to_dir(
     return dest
 
 
+def _to_repo_relative_path(absolute_path: str, repo_root: Path) -> str:
+    """将绝对路径转换为仓库相对路径，统一使用 POSIX 分隔符。"""
+    absolute = Path(absolute_path).resolve()
+    root = repo_root.resolve()
+    try:
+        return absolute.relative_to(root).as_posix()
+    except ValueError as e:
+        raise RuntimeError(f"模型文件不在仓库目录内: {absolute}") from e
+
+
 class RodinGenerate3DInput(BaseModel):
     """
     Rodin 3D 生成（显式 mode）
@@ -97,6 +108,11 @@ class RodinGenerate3DInput(BaseModel):
         description="文本提示词。mode=text_to_3d 时必填",
     )
 
+    object_id: Optional[str] = Field(
+        default=None,
+        description="可选：物体唯一标识，用于按 object_id 组织本地保存目录",
+    )
+
     short_id: Optional[str] = Field(
         default=None,
         description="可选：用于输出文件命名的简短编号（例如 01/02）。不传则默认使用 01。",
@@ -112,7 +128,7 @@ class RodinGenerate3DInput(BaseModel):
 
     download_dir: Optional[str] = Field(
         default=None,
-        description="可选：生成完成后把下载文件保存到该目录（不传则用配置/环境变量/临时目录）",
+        description="已保留但不生效：3D 模型固定保存到项目 assets/model 目录",
     )
 
 
@@ -138,12 +154,17 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
     poll_interval = threed_config.poll_interval
     poll_timeout = threed_config.poll_timeout
 
+    app_paths = get_app_config().paths
+    repo_root = app_paths.repo_root.resolve()
+    assets_model_root = app_paths.assets_model_dir.resolve()
+
     media_registry = get_media_registry()
 
     def _rodin_generate_3d(
         mode: str = "image_to_3d",
         images: Optional[List[str]] = None,
         prompt: Optional[str] = None,
+        object_id: Optional[str] = None,
         short_id: Optional[str] = None,
         condition_mode: str = "concat",
         tier: str = "Regular",
@@ -161,8 +182,9 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
             image_list: List[str] = []
             for image in (images or []):
                 if isinstance(image, str) and image.startswith("fileid://"):
-                    media = media_registry.get_by_file_id(image[9:].strip())
-                    image_list.append(media.content_url)
+                    file_id = image[9:].strip()
+                    # 阻塞等待异步任务完成，避免读取到空 content_url。
+                    image_list.append(media_registry.resolve(file_id))
                 else:
                     image_list.append(image)
 
@@ -204,19 +226,23 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
 
             # -----------------------------
             # 下载到本地
-            # 优先级：入参 download_dir > 配置 threed_config.download_dir > 环境变量 RODIN_3D_DOWNLOAD_DIR > 临时目录
+            # 固定保存到 <repo_root>/assets/model
             # -----------------------------
             cfg_download_dir = getattr(threed_config, "download_dir", None)
             env_download_dir = os.environ.get("RODIN_3D_DOWNLOAD_DIR")
-            save_root = (download_dir or cfg_download_dir or env_download_dir or tempfile.mkdtemp(prefix="rodin_3d_")).strip()
-
-            # 推荐统一落到 model/ 子目录
-            if os.path.basename(save_root).lower() not in {"model", "models"}:
-                save_root = os.path.join(save_root, "model")
+            if download_dir or cfg_download_dir or env_download_dir:
+                logging.getLogger(__name__).warning(
+                    "3D 保存目录已固定为 assets/model，忽略 download_dir 配置: arg=%s, cfg=%s, env=%s",
+                    download_dir,
+                    cfg_download_dir,
+                    env_download_dir,
+                )
 
             # ✅ 不用 task_uuid 建目录，改用 batch 目录（时间戳）
-            batch_dir = os.path.join(save_root, f"batch_{int(time.time())}")
-            os.makedirs(batch_dir, exist_ok=True)
+            object_dir_name = _safe_dirname(object_id or short_id or "object")
+            object_dir = assets_model_root / object_dir_name
+            object_dir.mkdir(parents=True, exist_ok=True)
+            batch_tag = str(int(time.time()))
 
 
             # 输出文件命名：优先 short_id（例如 01/02）；不传则默认 01
@@ -250,25 +276,31 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
 
                 cur_id = fixed_id if fixed_id is not None else f"{idx:02d}"
 
-                # ✅ 目录也用 cur_id（01/02/...）
-                cur_dir = os.path.join(batch_dir, cur_id)
-                os.makedirs(cur_dir, exist_ok=True)
-
-                preferred = f"{cur_id}{ext}"   # 01.glb / 01.webp ...
+                if typ == "mesh":
+                    preferred = f"{object_dir_name}_{batch_tag}_{cur_id}{ext}"
+                    output_type = "file"
+                elif typ == "preview":
+                    preferred = f"{object_dir_name}_{batch_tag}_{cur_id}_preview{ext}"
+                    output_type = "image"
+                else:
+                    preferred = f"{object_dir_name}_{batch_tag}_{cur_id}_{typ}{ext}"
+                    output_type = "file"
 
                 local_path = _download_url_to_dir(
                     url,
-                    cur_dir,
+                    str(object_dir),
                     timeout=float(threed_config.request_timeout),
                     preferred_filename=preferred,
                 )
+                relative_path = _to_repo_relative_path(local_path, repo_root)
 
                 parts.append(
                     build_part(
-                        content_type="file",
-                        content_text=local_path,
+                        content_type=output_type,
+                        content_text=relative_path,
                         parameter={
                             "additional_type": ["rodin_3d"],
+                            "object_id": object_dir_name,
                             "mode": mode,
                             "geometry_file_format": geometry_file_format,
                             "tier": tier,

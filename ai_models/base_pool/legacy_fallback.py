@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import logging
 import threading
+import base64
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
+
+import httpx
 
 from ai_models.base_pool.category import MediaCategory
 from ai_models.base_pool.requests import (
@@ -501,22 +505,77 @@ def create_legacy_omni_task(
     def task() -> MediaResult:
         from ai_tools.response_adapter import FILEID_SCHEME
         from ai_media_resource import get_media_registry
+        from ai_models.utils import file_url_to_data_uri
 
         # 解析 URL 的辅助函数
         def resolve_url(url: str) -> str:
+            normalized = (url or "").strip()
+            if not normalized:
+                return ""
+
             if url.startswith(FILEID_SCHEME):
                 file_id = url[len(FILEID_SCHEME):]
                 registry = get_media_registry()
-                result = registry.resolve(file_id, encode_to_base64=True)
+                result = registry.resolve(file_id)
                 if isinstance(result, dict):
-                    return result.get("url", "")
-                return result
-            return url
+                    normalized = str(result.get("url", ""))
+                else:
+                    normalized = str(result)
+
+            # OpenAI-compatible VLM 侧通常无法访问本地路径，统一转换为 data URI。
+            if normalized.startswith("file://"):
+                return file_url_to_data_uri(normalized)
+
+            local_path = Path(normalized)
+            if local_path.exists():
+                return file_url_to_data_uri(local_path.resolve().as_uri())
+
+            # 供应商侧常无法直接访问临时/私有 URL，这里主动下载并内联成 data URI。
+            if normalized.startswith(("http://", "https://")):
+                try:
+                    with httpx.Client(timeout=30.0, follow_redirects=True) as c:
+                        r = c.get(normalized)
+                        r.raise_for_status()
+                        mime = r.headers.get("content-type", "").split(";")[0].strip().lower()
+                        if not mime.startswith("image/"):
+                            raise ValueError(f"URL 不是图片资源: content-type={mime}")
+                        b64 = base64.b64encode(r.content).decode("utf-8")
+                        return f"data:{mime};base64,{b64}"
+                except Exception as e:
+                    raise ValueError(
+                        f"Omni 无法下载图片 URL: {normalized[:120]}, err={e}"
+                    ) from e
+
+            if normalized.startswith(("http://", "https://", "data:")):
+                return normalized
+
+            raise ValueError(
+                f"Omni 不支持的图片输入，无法访问: {normalized[:120]}"
+            )
+
+            return normalized
 
         # 解析所有 URL
         resolved_image_urls = [resolve_url(url) for url in request.image_urls]
         resolved_video_urls = [resolve_url(url) for url in request.video_urls]
         resolved_audio_urls = [resolve_url(url) for url in request.audio_urls]
+
+        if resolved_image_urls:
+            scheme_stats = {"data": 0, "http": 0, "other": 0}
+            for u in resolved_image_urls:
+                if u.startswith("data:"):
+                    scheme_stats["data"] += 1
+                elif u.startswith(("http://", "https://")):
+                    scheme_stats["http"] += 1
+                else:
+                    scheme_stats["other"] += 1
+            logger.info(
+                "[Omni] image url normalized: total=%s, data=%s, http=%s, other=%s",
+                len(resolved_image_urls),
+                scheme_stats["data"],
+                scheme_stats["http"],
+                scheme_stats["other"],
+            )
 
         # 构建多模态消息 content
         content = []

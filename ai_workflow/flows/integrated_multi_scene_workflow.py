@@ -15,9 +15,13 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import logging
+import base64
+from pathlib import Path
 import re
 import time
 from typing import Any, Dict, List, TYPE_CHECKING
+
+import httpx
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
@@ -26,6 +30,7 @@ from ai_config.ai_config import get_ai_config
 from ai_models.base_pool import get_chat_model, get_pool_registry, MediaCategory, OmniRequest
 from ai_tools.registry import get_tool_registry
 from ai_workflow.state import WorkflowState
+from ai_tools.response_adapter import FILEID_SCHEME
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
@@ -61,16 +66,44 @@ def _extract_text(response: Any) -> str:
     return str(content or "")
 
 
-def _extract_file_id(raw_result: Any) -> str:
-    """从工具返回值中提取 content_url"""
+def _extract_image_url(raw_result: Any) -> str:
+    """从工具返回值中提取并解析图片 URL（含 fileid 延迟解析）。"""
     try:
         parsed = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
-        extracted = parsed["llm_content"][0]["part"][0]["content_url"]
+        part = parsed["llm_content"][0]["part"][0]
+        extracted = str(part.get("content_url") or part.get("content_text") or "")
     except (json.JSONDecodeError, KeyError, IndexError, TypeError):
         extracted = str(raw_result)
+
     if extracted.count("{") > 1:
         return ""
+
+    if extracted.startswith(FILEID_SCHEME):
+        from ai_media_resource import get_media_registry
+
+        file_id = extracted[len(FILEID_SCHEME):]
+        try:
+            # 阻塞等待异步任务完成，获取可访问 URL。
+            return get_media_registry().resolve(file_id)
+        except Exception as e:
+            logger.error(f"[Workflow][generate_images] file_id 解析失败: {file_id}, err={e}")
+            return ""
+
     return extracted
+
+
+def _to_display_url(url: str) -> str:
+    """将本地绝对路径转换为 file:// URL，便于 markdown 展示。"""
+    if not url:
+        return ""
+    lowered = url.lower()
+    if lowered.startswith(("http://", "https://", "data:", "file://")):
+        return url
+
+    path = Path(url)
+    if path.is_absolute():
+        return path.as_uri()
+    return url
 
 
 def _build_llm_content(text_parts: List[str]) -> List[Dict[str, Any]]:
@@ -194,11 +227,75 @@ def _analyze_images_with_vlm(
         VLM 返回的文本分析结果；调用失败时返回空字符串。
     """
     try:
+        from ai_media_resource import get_media_registry
+
+        normalized_images: List[str] = []
+        src_stats = {"fileid": 0, "file": 0, "local": 0, "http": 0, "data": 0, "other": 0}
+
+        for raw in images:
+            u = str(raw or "").strip()
+            if not u:
+                continue
+
+            if u.startswith("data:"):
+                src_stats["data"] += 1
+                normalized_images.append(u)
+                continue
+
+            if u.startswith(FILEID_SCHEME):
+                src_stats["fileid"] += 1
+                u = str(get_media_registry().resolve(u[len(FILEID_SCHEME):]))
+
+            if u.startswith("file://"):
+                src_stats["file"] += 1
+                from ai_models.utils import file_url_to_data_uri
+
+                normalized_images.append(file_url_to_data_uri(u))
+                continue
+
+            p = Path(u)
+            if p.exists():
+                src_stats["local"] += 1
+                from ai_models.utils import file_url_to_data_uri
+
+                normalized_images.append(file_url_to_data_uri(p.resolve().as_uri()))
+                continue
+
+            if u.startswith(("http://", "https://")):
+                src_stats["http"] += 1
+                # 兜底：下载后转 data URI，避免上游 VLM 拉取远端 URL 失败。
+                with httpx.Client(timeout=30.0, follow_redirects=True) as c:
+                    r = c.get(u)
+                    r.raise_for_status()
+                    mime = r.headers.get("content-type", "").split(";")[0].strip().lower()
+                    if not mime.startswith("image/"):
+                        raise ValueError(f"VLM 输入不是图片: {u[:120]}, content-type={mime}")
+                    b64 = base64.b64encode(r.content).decode("utf-8")
+                    normalized_images.append(f"data:{mime};base64,{b64}")
+                continue
+
+            src_stats["other"] += 1
+            logger.warning(f"[Workflow][analyzer] 无法识别的图片输入，已跳过: {u[:160]}")
+
+        logger.info(
+            "[Workflow][analyzer] image source stats: fileid=%s file=%s local=%s http=%s data=%s other=%s",
+            src_stats["fileid"],
+            src_stats["file"],
+            src_stats["local"],
+            src_stats["http"],
+            src_stats["data"],
+            src_stats["other"],
+        )
+
+        if not normalized_images:
+            logger.warning("[Workflow][analyzer] 无可用图片传给 VLM")
+            return ""
+
         pool_registry = get_pool_registry()
         request = OmniRequest(
             session_id=session_id or f"workflow-{int(time.time())}",
             prompt=_VLM_ANALYSIS_PROMPT,
-            image_urls=list(images),
+            image_urls=normalized_images,
         )
         task = pool_registry.create_task(MediaCategory.OMNI, request)
         if task is None:
@@ -388,8 +485,8 @@ def generate_images_node(state: WorkflowState) -> Dict[str, Any]:
             return name, ""
         try:
             raw_result = image_tool.invoke({"prompt": prompt})
-            file_id = _extract_file_id(raw_result)
-            return name, file_id
+            image_url = _extract_image_url(raw_result)
+            return name, image_url
         except Exception as e:
             logger.error(f"[Workflow][generate_images] {name} 生成失败: {e}")
             return name, ""
@@ -463,7 +560,7 @@ def aggregate_result_node(state: WorkflowState) -> Dict[str, Any]:
             md_parts.append(f"{desc}")
         img_url = generated_images.get(name, "")
         if img_url:
-            md_parts.append(f"\n![{name}]({img_url})\n")
+            md_parts.append(f"\n![{name}]({_to_display_url(img_url)})\n")
         else:
             md_parts.append("\n（图片生成失败）\n")
 

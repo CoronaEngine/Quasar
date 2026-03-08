@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from typing import Any, Dict
-import os
 
 from ai_service.entrance import ai_entrance
 @ai_entrance.collector.register_setting("rodin3d")
 def RODIN_3D_SETTINGS() -> Dict[str, Any]:
+    # 模型文件本地保存策略由 three_d_generate.tools.model_tools 统一管理：
+    # 固定写入 <repo_root>/assets/model/<object_id>/，不依赖 download_dir 或环境变量。
     return {
         "base_url": "https://api.hyper3d.com",
         "api_key": "your key",

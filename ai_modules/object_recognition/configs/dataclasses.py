@@ -7,6 +7,13 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
+from config.app_config import get_app_config
+
+
+def _default_vector_db_path() -> str:
+    """从全局路径配置获取物体识别数据库默认路径。"""
+    return str(get_app_config().paths.object_recognition_db)
+
 
 @dataclass(frozen=False)
 class EmbeddingModelConfig:
@@ -31,7 +38,7 @@ class VectorDBConfig:
     """sqlite-vec 向量数据库配置"""
 
     # 数据库文件路径（单 .db 文件）
-    db_path: str = "./object_recognition.db"
+    db_path: str = field(default_factory=_default_vector_db_path)
     # 向量维度（须与 EmbeddingModelConfig.output_dim 一致）
     vector_dim: int = 1024
     # 搜索时默认返回的最大结果数

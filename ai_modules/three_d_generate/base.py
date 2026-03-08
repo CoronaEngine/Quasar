@@ -216,10 +216,13 @@ def _handle_3d_generate_inner(
 
         geometry_file_format = extract_parameter(request_data, "geometry_file_format")
         tier = extract_parameter(request_data, "tier")
+        object_id = extract_parameter(request_data, "object_id")
         if geometry_file_format:
             tool_params["geometry_file_format"] = geometry_file_format
         if tier:
             tool_params["tier"] = tier
+        if object_id:
+            tool_params["object_id"] = str(object_id)
 
         if mode == "image_to_3d":
             # img_refs 可能是 fileid/http/本地路径，推荐由 Rodin3DClient 在 client 内部统一转成 multipart
