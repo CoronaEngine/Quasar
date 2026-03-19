@@ -40,6 +40,8 @@ MODEL_RETRIEVAL_FUNCTION_ID = 21002
 
 # 检索距离阈值：低于此值视为命中
 SEARCH_DISTANCE_THRESHOLD = 0.3
+SEARCH_MAX_WORKERS = 1
+GENERATION_MAX_WORKERS = 1
 
 
 def _normalize_object_id(name: str, fallback_index: int) -> str:
@@ -107,24 +109,63 @@ def _build_llm_content(text_parts: List[str]) -> List[Dict[str, Any]]:
     return entries
 
 
-def _parse_search_result(raw_result: Any) -> List[Dict[str, Any]]:
-    """解析 search_similar_object 返回值，提取 matches 列表。"""
+def _parse_tool_result(raw_result: Any) -> Dict[str, Any]:
+    """解析工具 envelope，统一返回字典结构。"""
+    if isinstance(raw_result, dict):
+        return raw_result
+    if isinstance(raw_result, str):
+        return json.loads(raw_result)
+    raise TypeError(f"不支持的工具返回类型: {type(raw_result)!r}")
+
+
+def _extract_tool_error(parsed_result: Dict[str, Any]) -> str:
+    """从工具 envelope 中提取错误信息。"""
+    error_code = parsed_result.get("error_code", 0)
+    if not error_code:
+        return ""
+
+    status_info = str(parsed_result.get("status_info", "") or "").strip()
+    if status_info and status_info.lower() != "success":
+        return status_info
+
     try:
-        parsed = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        parts = parsed_result["llm_content"][0]["part"]
+        for part in parts:
+            text = str(part.get("content_text", "") or "").strip()
+            if text:
+                return text
+    except (KeyError, IndexError, TypeError):
+        pass
+
+    return "工具调用失败"
+
+
+def _parse_search_result(raw_result: Any) -> Dict[str, Any]:
+    """解析 search_similar_object 返回值，提取 matches 与错误信息。"""
+    try:
+        parsed = _parse_tool_result(raw_result)
+        error_message = _extract_tool_error(parsed)
+        if error_message:
+            return {"matches": [], "error": error_message}
+
         parts = parsed["llm_content"][0]["part"]
         for part in parts:
             matches = part.get("parameter", {}).get("matches", [])
             if isinstance(matches, list):
-                return matches
-    except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                return {"matches": matches, "error": ""}
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
         pass
-    return []
+    return {"matches": [], "error": "搜索结果解析失败"}
 
 
 def _parse_3d_result(raw_result: Any) -> Dict[str, Any]:
     """解析 rodin_generate_3d 返回值，提取模型文件路径与元数据。"""
     try:
-        parsed = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        parsed = _parse_tool_result(raw_result)
+        error_message = _extract_tool_error(parsed)
+        if error_message:
+            return {"error": error_message}
+
         parts = parsed["llm_content"][0]["part"]
         model_path = ""
         parameter: Dict[str, Any] = {}
@@ -146,9 +187,9 @@ def _parse_3d_result(raw_result: Any) -> Dict[str, Any]:
                 "model_path": model_path,
                 "parameter": parameter,
             }
-    except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
         pass
-    return {}
+    return {"error": "3D 生成结果解析失败"}
 
 
 def _get_recognition_db_config() -> Dict[str, Any]:
@@ -240,93 +281,169 @@ def dispatch_node(state: WorkflowState) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _process_single_item(
-    task: Dict[str, str],
-    search_tool: Any,
-    generate_tool: Any,
-) -> Dict[str, Any]:
-    """处理单个物体：先检索，未命中则生成。
-
-    Returns:
-        {item_name, source, object_id?, model_path?, parameter?, error?}
-    """
+def _retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, Any]:
+    """处理单个物体检索阶段，返回命中结果或待生成任务。"""
     name = task["item_name"]
     object_id = task.get("object_id", "")
     image_url = task["image_url"]
     image_prompt = task.get("image_prompt", "")
 
-    result: Dict[str, Any] = {"item_name": name}
+    result: Dict[str, Any] = {
+        "item_name": name,
+        "object_id": object_id,
+        "task_index": task.get("task_index", 0),
+        "input_image_url": image_url,
+    }
 
-    # --- Step 1: 检索 ---
-    if search_tool:
-        try:
-            raw = search_tool.invoke({
-                "query_images": [image_url],
-                "query_text": image_prompt,
-                "top_k": 1,
-            })
-            matches = _parse_search_result(raw)
+    if not search_tool:
+        result.update({
+            "source": "pending_generation",
+            "search_status": "tool_unavailable",
+        })
+        return result
 
-            if matches and matches[0].get("distance", 999) < SEARCH_DISTANCE_THRESHOLD:
-                best = matches[0]
-                result.update({
-                    "source": "retrieval",
-                    "object_id": best.get("object_id", ""),
-                    "name": best.get("name", ""),
-                    "distance": best.get("distance", 0),
-                })
-                logger.info(
-                    f"[Workflow][retrieve] {name} 检索命中: "
-                    f"object_id={best.get('object_id')}, "
-                    f"distance={best.get('distance', 0):.4f}"
-                )
-                return result
+    started_at = time.perf_counter()
+    logger.info(f"[Workflow][retrieve] {name} 开始检索")
 
-            logger.info(
-                f"[Workflow][retrieve] {name} 检索未命中"
-                f"（最佳 distance={matches[0].get('distance', 'N/A') if matches else 'N/A'}）"
+    try:
+        raw = search_tool.invoke({
+            "query_images": [image_url],
+            "query_text": image_prompt,
+            "top_k": 1,
+        })
+        search_info = _parse_search_result(raw)
+        matches = search_info.get("matches", [])
+        search_error = search_info.get("error", "")
+        elapsed = time.perf_counter() - started_at
+
+        if search_error:
+            logger.warning(
+                f"[Workflow][retrieve] {name} 检索失败，将降级生成: "
+                f"{search_error} (elapsed={elapsed:.2f}s)"
             )
-        except Exception as e:
-            logger.warning(f"[Workflow][retrieve] {name} 检索异常: {e}")
-
-    # --- Step 2: 生成 3D 模型 ---
-    if generate_tool:
-        try:
-            raw = generate_tool.invoke({
-                "mode": "image_to_3d",
-                "images": [image_url],
-                "object_id": object_id,
+            result.update({
+                "source": "pending_generation",
+                "search_status": "error",
+                "search_error": search_error,
             })
-            model_info = _parse_3d_result(raw)
-
-            if model_info:
-                result.update({
-                    "source": "generation",
-                    "object_id": object_id,
-                    "model_path": model_info.get("model_path", ""),
-                    "parameter": model_info.get("parameter", {}),
-                    "input_image_url": image_url,
-                })
-                logger.info(
-                    f"[Workflow][generate] {name} 3D 模型生成完成: "
-                    f"{model_info.get('model_path', '')}"
-                )
-                return result
-
-            result.update({"source": "generation", "error": "生成结果解析为空"})
             return result
 
-        except Exception as e:
-            logger.error(f"[Workflow][generate] {name} 3D 生成失败: {e}")
-            result.update({"source": "generation", "error": str(e)})
+        if matches and matches[0].get("distance", 999) < SEARCH_DISTANCE_THRESHOLD:
+            best = matches[0]
+            result.update({
+                "source": "retrieval",
+                "object_id": best.get("object_id", ""),
+                "name": best.get("name", ""),
+                "distance": best.get("distance", 0),
+                "search_elapsed_seconds": round(elapsed, 3),
+            })
+            logger.info(
+                f"[Workflow][retrieve] {name} 检索命中: "
+                f"object_id={best.get('object_id')}, "
+                f"distance={best.get('distance', 0):.4f}, "
+                f"elapsed={elapsed:.2f}s"
+            )
             return result
 
-    result["error"] = "检索工具和生成工具均不可用"
-    return result
+        best_distance = matches[0].get("distance", "N/A") if matches else "N/A"
+        logger.info(
+            f"[Workflow][retrieve] {name} 检索未命中"
+            f"（最佳 distance={best_distance}, elapsed={elapsed:.2f}s）"
+        )
+        result.update({
+            "source": "pending_generation",
+            "search_status": "miss",
+            "best_distance": best_distance,
+            "search_elapsed_seconds": round(elapsed, 3),
+        })
+        return result
+    except Exception as e:
+        elapsed = time.perf_counter() - started_at
+        logger.warning(
+            f"[Workflow][retrieve] {name} 检索异常，将降级生成: "
+            f"{e} (elapsed={elapsed:.2f}s)"
+        )
+        result.update({
+            "source": "pending_generation",
+            "search_status": "error",
+            "search_error": str(e),
+            "search_elapsed_seconds": round(elapsed, 3),
+        })
+        return result
+
+
+def _generate_single_item(task: Dict[str, Any], generate_tool: Any) -> Dict[str, Any]:
+    """处理单个物体生成阶段。"""
+    name = task["item_name"]
+    object_id = task.get("object_id", "")
+    image_url = task.get("input_image_url") or task.get("image_url", "")
+    result: Dict[str, Any] = {
+        "item_name": name,
+        "object_id": object_id,
+        "task_index": task.get("task_index", 0),
+        "input_image_url": image_url,
+    }
+
+    search_error = str(task.get("search_error", "") or "").strip()
+
+    if not generate_tool:
+        error_message = "检索未命中且 3D 生成工具不可用"
+        if search_error:
+            error_message = f"检索失败且 3D 生成工具不可用: {search_error}"
+        result.update({"source": "generation", "error": error_message})
+        return result
+
+    started_at = time.perf_counter()
+    logger.info(f"[Workflow][generate] {name} 开始 3D 生成")
+
+    try:
+        raw = generate_tool.invoke({
+            "mode": "image_to_3d",
+            "images": [image_url],
+            "object_id": object_id,
+        })
+        model_info = _parse_3d_result(raw)
+        elapsed = time.perf_counter() - started_at
+
+        if model_info.get("error"):
+            error_message = str(model_info.get("error", "生成结果解析为空"))
+            logger.error(
+                f"[Workflow][generate] {name} 3D 生成失败: "
+                f"{error_message} (elapsed={elapsed:.2f}s)"
+            )
+            result.update({"source": "generation", "error": error_message})
+            if search_error:
+                result["search_error"] = search_error
+            return result
+
+        result.update({
+            "source": "generation",
+            "model_path": model_info.get("model_path", ""),
+            "parameter": model_info.get("parameter", {}),
+            "generation_elapsed_seconds": round(elapsed, 3),
+        })
+        if search_error:
+            result["search_error"] = search_error
+
+        logger.info(
+            f"[Workflow][generate] {name} 3D 模型生成完成: "
+            f"{model_info.get('model_path', '')} (elapsed={elapsed:.2f}s)"
+        )
+        return result
+    except Exception as e:
+        elapsed = time.perf_counter() - started_at
+        logger.error(
+            f"[Workflow][generate] {name} 3D 生成失败: {e} "
+            f"(elapsed={elapsed:.2f}s)"
+        )
+        result.update({"source": "generation", "error": str(e)})
+        if search_error:
+            result["search_error"] = search_error
+        return result
 
 
 def retrieve_or_generate_node(state: WorkflowState) -> Dict[str, Any]:
-    """对每个物体并发执行：检索已有 3D 模型，未命中则生成新模型。"""
+    """先完成全部检索，再对未命中的物体并发生成 3D 模型。"""
     if state.get("error"):
         return {}
 
@@ -335,40 +452,97 @@ def retrieve_or_generate_node(state: WorkflowState) -> Dict[str, Any]:
         return {"error": "无检索/生成任务"}
 
     search_tool = _get_search_tool()
-    generate_tool = _get_3d_generate_tool()
-
-    if not search_tool and not generate_tool:
-        return {"error": "检索工具和 3D 生成工具均不可用"}
+    generate_tool = None
 
     if not search_tool:
         logger.warning("[Workflow][retrieve_or_generate] 检索工具不可用，将全部走生成")
-    if not generate_tool:
-        logger.warning("[Workflow][retrieve_or_generate] 3D 生成工具不可用，未命中时无法生成")
 
-    results: List[Dict[str, Any]] = []
+    retrieval_results: List[Dict[str, Any]] = []
+    pending_generation: List[Dict[str, Any]] = []
 
-    max_workers = min(len(tasks), 3)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(_process_single_item, task, search_tool, generate_tool): task
-            for task in tasks
-        }
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                results.append(future.result())
-            except Exception as e:
+    indexed_tasks = [
+        {**task, "task_index": task.get("task_index", index)}
+        for index, task in enumerate(tasks, start=1)
+    ]
+
+    if SEARCH_MAX_WORKERS <= 1:
+        for task in indexed_tasks:
+            retrieved = _retrieve_single_item(task, search_tool)
+            if retrieved.get("source") == "retrieval":
+                retrieval_results.append(retrieved)
+            else:
+                pending_generation.append(retrieved)
+    else:
+        max_workers = min(len(indexed_tasks), SEARCH_MAX_WORKERS)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_retrieve_single_item, task, search_tool): task
+                for task in indexed_tasks
+            }
+            for future in concurrent.futures.as_completed(futures):
                 task = futures[future]
-                logger.error(
-                    f"[Workflow][retrieve_or_generate] "
-                    f"{task.get('item_name', '?')} 并发任务异常: {e}"
-                )
-                results.append({
-                    "item_name": task.get("item_name", "未知"),
-                    "error": str(e),
-                })
+                try:
+                    retrieved = future.result()
+                except Exception as e:
+                    logger.error(
+                        f"[Workflow][retrieve_or_generate] "
+                        f"{task.get('item_name', '?')} 检索任务异常: {e}"
+                    )
+                    retrieved = {
+                        "item_name": task.get("item_name", "未知"),
+                        "object_id": task.get("object_id", ""),
+                        "task_index": task.get("task_index", 0),
+                        "input_image_url": task.get("image_url", ""),
+                        "source": "pending_generation",
+                        "search_status": "error",
+                        "search_error": str(e),
+                    }
+
+                if retrieved.get("source") == "retrieval":
+                    retrieval_results.append(retrieved)
+                else:
+                    pending_generation.append(retrieved)
+
+    generated_results: List[Dict[str, Any]] = []
+    if pending_generation:
+        generate_tool = _get_3d_generate_tool()
+        if not generate_tool:
+            logger.warning("[Workflow][retrieve_or_generate] 3D 生成工具不可用，未命中项将返回错误")
+
+        max_workers = min(len(pending_generation), GENERATION_MAX_WORKERS) or 1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_generate_single_item, task, generate_tool): task
+                for task in pending_generation
+            }
+            for future in concurrent.futures.as_completed(futures):
+                task = futures[future]
+                try:
+                    generated_results.append(future.result())
+                except Exception as e:
+                    logger.error(
+                        f"[Workflow][retrieve_or_generate] "
+                        f"{task.get('item_name', '?')} 生成任务异常: {e}"
+                    )
+                    generated_results.append({
+                        "item_name": task.get("item_name", "未知"),
+                        "object_id": task.get("object_id", ""),
+                        "task_index": task.get("task_index", 0),
+                        "input_image_url": task.get("input_image_url", ""),
+                        "source": "generation",
+                        "error": str(e),
+                    })
+
+    results = sorted(
+        retrieval_results + generated_results,
+        key=lambda item: item.get("task_index", 0),
+    )
 
     retrieval_count = sum(1 for r in results if r.get("source") == "retrieval")
-    generation_count = sum(1 for r in results if r.get("source") == "generation")
+    generation_count = sum(
+        1 for r in results
+        if r.get("source") == "generation" and not r.get("error")
+    )
     error_count = sum(1 for r in results if r.get("error"))
 
     logger.info(

@@ -3,9 +3,14 @@ import tempfile
 import time
 import base64
 import re
+import logging
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
+
+
+logger = logging.getLogger(__name__)
 
 
 class Rodin3DClient:
@@ -21,6 +26,7 @@ class Rodin3DClient:
         self.api_key = api_key
         self.timeout = timeout
         self.extra_headers = extra_headers or {}
+        self._generation_lock = threading.Lock()
 
     def _headers(self) -> Dict[str, str]:
         h = dict(self.extra_headers)
@@ -43,7 +49,6 @@ class Rodin3DClient:
         """
         image_ref = (image_ref or "").strip()
 
-        print(image_ref)
         if not image_ref:
             raise ValueError("图片输入为空")
 
@@ -225,6 +230,35 @@ class Rodin3DClient:
     # ------------------------------------------------------------------
     # ✅ 关键 2：补齐 integrated 需要的 run_to_download_urls
     # ------------------------------------------------------------------
+    @staticmethod
+    def _extract_task_specific_jobs(status_response: Dict[str, Any], task_uuid: str) -> List[Dict[str, Any]]:
+        """尽量从状态返回中筛出当前 task 的 jobs，避免并发请求互相影响。"""
+        job_list = status_response.get("jobs") or []
+        if not isinstance(job_list, list):
+            return []
+
+        matched_jobs: List[Dict[str, Any]] = []
+        task_uuid = str(task_uuid or "").strip()
+        if not task_uuid:
+            return []
+
+        candidate_keys = (
+            "task_uuid",
+            "uuid",
+            "job_uuid",
+            "id",
+            "request_uuid",
+            "parent_uuid",
+        )
+        for job in job_list:
+            if not isinstance(job, dict):
+                continue
+            if any(str(job.get(key, "")).strip() == task_uuid for key in candidate_keys):
+                matched_jobs.append(job)
+
+        return matched_jobs
+
+
     def run_to_download_urls(
         self,
         *,
@@ -242,40 +276,62 @@ class Rodin3DClient:
         - 轮询状态
         - 完成后返回 downloads 列表
         """
-        submit = self.submit_generation(
-            generate_path=generate_path,
-            images=images,
-            form_fields=form_fields,
-        )
+        with self._generation_lock:
+            submit = self.submit_generation(
+                generate_path=generate_path,
+                images=images,
+                form_fields=form_fields,
+            )
 
-        task_uuid = submit.get("uuid") or submit.get("task_uuid")
-        jobs = submit.get("jobs") or {}
-        subscription_key = jobs.get("subscription_key") if isinstance(jobs, dict) else None
+            task_uuid = submit.get("uuid") or submit.get("task_uuid")
+            jobs = submit.get("jobs") or {}
+            subscription_key = jobs.get("subscription_key") if isinstance(jobs, dict) else None
 
-        if not task_uuid or not subscription_key:
-            raise RuntimeError(f"Rodin 提交返回缺少 uuid/subscription_key: {submit}")
+            if not task_uuid or not subscription_key:
+                raise RuntimeError(f"Rodin 提交返回缺少 uuid/subscription_key: {submit}")
 
-        start = time.time()
-        while True:
-            if time.time() - start > poll_timeout:
-                raise TimeoutError(f"Rodin 任务超时（>{poll_timeout}s），task_uuid={task_uuid}")
+            logger.info(
+                "Rodin submit accepted task_uuid=%s subscription_key=%s",
+                task_uuid,
+                subscription_key,
+            )
 
-            st = self.check_status(status_path=status_path, subscription_key=subscription_key)
-            job_list = st.get("jobs") or []
-            statuses = []
-            for j in job_list:
-                if isinstance(j, dict):
-                    statuses.append(j.get("status"))
+            start = time.time()
+            while True:
+                if time.time() - start > poll_timeout:
+                    raise TimeoutError(f"Rodin 任务超时（>{poll_timeout}s），task_uuid={task_uuid}")
 
-            if any(s == "Failed" for s in statuses):
-                raise RuntimeError(f"Rodin 任务失败：{st}")
+                st = self.check_status(status_path=status_path, subscription_key=subscription_key)
+                matched_jobs = self._extract_task_specific_jobs(st, str(task_uuid))
+                job_list = matched_jobs or (st.get("jobs") or [])
+                statuses = []
+                for j in job_list:
+                    if isinstance(j, dict):
+                        statuses.append(j.get("status"))
 
-            if statuses and all(s == "Done" for s in statuses):
-                downloads = self.download(download_path=download_path, task_uuid=task_uuid)
-                return {
-                    "task_uuid": task_uuid,
-                    "subscription_key": subscription_key,
-                    "downloads": downloads,
-                }
+                if matched_jobs:
+                    logger.debug(
+                        "Rodin status task_uuid=%s matched_jobs=%s statuses=%s",
+                        task_uuid,
+                        len(matched_jobs),
+                        statuses,
+                    )
+                elif st.get("jobs"):
+                    logger.warning(
+                        "Rodin status 未找到 task_uuid=%s 对应 job，回退到 subscription 级状态: %s",
+                        task_uuid,
+                        statuses,
+                    )
 
-            time.sleep(poll_interval)
+                if any(s == "Failed" for s in statuses):
+                    raise RuntimeError(f"Rodin 任务失败：task_uuid={task_uuid}, status={st}")
+
+                if statuses and all(s == "Done" for s in statuses):
+                    downloads = self.download(download_path=download_path, task_uuid=task_uuid)
+                    return {
+                        "task_uuid": task_uuid,
+                        "subscription_key": subscription_key,
+                        "downloads": downloads,
+                    }
+
+                time.sleep(poll_interval)

@@ -52,6 +52,7 @@ class Qwen3VLEmbeddingClient:
         self.config = config
         self._model = None
         self._lock = threading.Lock()
+        self._inference_lock = threading.Lock()
 
     def _load_model(self) -> None:
         """懒加载模型（首次调用时触发）"""
@@ -155,7 +156,8 @@ class Qwen3VLEmbeddingClient:
             input_dict["text"] = text
 
         # 调用模型推理（返回归一化后的 torch.Tensor）
-        embeddings = self._model.process([input_dict], normalize=True)
+        with self._inference_lock:
+            embeddings = self._model.process([input_dict], normalize=True)
 
         # 取第一个结果，转为 numpy
         vec = embeddings[0].cpu().float().numpy()
@@ -205,7 +207,8 @@ class Qwen3VLEmbeddingClient:
         if text:
             input_dict["text"] = text
 
-        embeddings = self._model.process([input_dict], normalize=True)
+        with self._inference_lock:
+            embeddings = self._model.process([input_dict], normalize=True)
 
         vec = embeddings[0].cpu().float().numpy()
 
