@@ -41,6 +41,40 @@ class ToolError(Exception):
         self.error_code = error_code
 
 
+def _is_recoverable_tool_error(error: ToolError) -> bool:
+    """判断工具错误是否属于可降级的临时连接问题。"""
+    error_msg = str(error).lower()
+    recoverable_keywords = [
+        "connection",
+        "timeout",
+        "unreachable",
+        "refused",
+        "temporary",
+    ]
+    return any(keyword in error_msg for keyword in recoverable_keywords)
+
+
+def _build_tool_error_entry(error: ToolError) -> Dict[str, Any]:
+    """将可恢复的工具错误转为普通 assistant 文本消息，避免整轮对话失败。"""
+    return {
+        "role": "assistant",
+        "interface_type": "integrated",
+        "sent_time_stamp": int(time.time()),
+        "part": [
+            {
+                "content_type": "text",
+                "content_text": "工具服务暂时不可用，请稍后重试。",
+                "content_url": "",
+                "parameter": {
+                    "tool_error": True,
+                    "recoverable": True,
+                    "raw_error": str(error),
+                },
+            }
+        ],
+    }
+
+
 def _parse_tool_parts(content: str) -> List[Dict[str, Any]]:
     """
     [修改] 解析工具返回的完整 API 响应 Envelope。
@@ -204,6 +238,13 @@ def _handle_integrated_entrance_inner(
                 try:
                     tool_parts = _parse_tool_parts(msg.content)
                 except ToolError as e:
+                    if _is_recoverable_tool_error(e):
+                        logger.warning(f"工具连接失败，降级为提示消息: {e}")
+                        new_entry = _build_tool_error_entry(e)
+                        llm_content_list.append(new_entry)
+                        last_assistant_entry = new_entry
+                        continue
+
                     # 工具返回了错误，记录并重新抛出以返回错误响应
                     logger.error(f"工具执行失败: {e}")
                     raise
@@ -496,6 +537,43 @@ def _handle_integrated_entrance_stream_inner(
                         try:
                             tool_parts = _parse_tool_parts(msg.content)
                         except ToolError as e:
+                            if _is_recoverable_tool_error(e):
+                                logger.warning(
+                                    f"[Stream] 工具连接失败，降级为提示消息: {e}"
+                                )
+
+                                if (
+                                    last_assistant_entry is not None
+                                    and last_assistant_entry["part"]
+                                ):
+                                    response = build_success_response(
+                                        interface_type="integrated",
+                                        session_id=session_id,
+                                        metadata=metadata,
+                                        llm_content=[last_assistant_entry],
+                                    )
+                                    logger.debug(
+                                        "[Stream] 工具失败前先输出已累积 assistant 内容"
+                                    )
+                                    yield response
+
+                                error_entry = _build_tool_error_entry(e)
+                                response = build_success_response(
+                                    interface_type="integrated",
+                                    session_id=session_id,
+                                    metadata=metadata,
+                                    llm_content=[error_entry],
+                                )
+                                yield response
+                                accumulated_messages.append(
+                                    AIMessage(
+                                        content=error_entry["part"][0]["content_text"]
+                                    )
+                                )
+                                last_assistant_entry = None
+                                tool_count_in_current_entry = 0
+                                continue
+
                             # 工具返回了错误，记录并重新抛出以返回错误响应
                             logger.error(f"[Stream] 工具执行失败: {e}")
                             raise

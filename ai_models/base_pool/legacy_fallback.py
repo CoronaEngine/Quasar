@@ -190,6 +190,7 @@ def _get_legacy_omni_client():
         api_key=provider.api_key,
         base_url=provider.base_url,
         timeout=omni_cfg.request_timeout,
+        max_retries=0,
     )
 
     return (client, omni_cfg)
@@ -221,6 +222,7 @@ def _get_legacy_detection_client():
         api_key=provider.api_key,
         base_url=provider.base_url,
         timeout=detection_cfg.request_timeout,
+        max_retries=0,
     )
 
     return (client, detection_cfg)
