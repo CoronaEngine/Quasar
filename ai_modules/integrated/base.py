@@ -103,7 +103,9 @@ def _parse_tool_parts(content: str) -> List[Dict[str, Any]]:
             error_code = data.get("error_code", 0)
             if error_code != 0:
                 error_msg = data.get("status_info", "工具执行失败")
-                logger.error(f"工具返回错误: error_code={error_code}, status_info={error_msg}")
+                logger.error(
+                    f"工具返回错误: error_code={error_code}, status_info={error_msg}"
+                )
                 raise ToolError(error_msg, error_code)
 
         # 4. 钻取: llm_content -> list -> part -> list
@@ -116,7 +118,13 @@ def _parse_tool_parts(content: str) -> List[Dict[str, Any]]:
                         for p in parts:
                             if isinstance(p, dict):
                                 c_type = p.get("content_type")
-                                if c_type in ["image", "audio", "video", "text", "file"]:
+                                if c_type in [
+                                    "image",
+                                    "audio",
+                                    "video",
+                                    "text",
+                                    "file",
+                                ]:
                                     found_parts.append(p)
     except ToolError:
         # 重新抛出 ToolError，不要被下面的通用异常捕获
@@ -151,6 +159,7 @@ def _extract_text_parts(msg: AIMessage) -> List[Dict[str, Any]]:
         )
     logger.debug(f"提取文本部分: {parts}")
     return parts
+
 
 @register_entrance(handler_name="handle_integrated_entrance")
 def handle_integrated_entrance(payload: Any) -> str:
@@ -336,6 +345,7 @@ def _handle_integrated_entrance_inner(
         logger.debug(f"返回错误响应: {response}")
         return response
 
+
 @register_entrance(handler_name="handle_integrated_entrance_stream")
 def handle_integrated_entrance_stream(payload: Any):
     """
@@ -448,7 +458,7 @@ def _handle_integrated_entrance_stream_inner(
                 if "parameter" in part:
                     clean_part["parameter"] = part["parameter"]
 
-                assistant_msg = wrap_part_as_assistant_message(clean_part, session_id)
+                assistant_msg = wrap_part_as_assistant_message(clean_part)
                 artificial_assistant_messages.append(assistant_msg)
 
                 if human_content_blocks:

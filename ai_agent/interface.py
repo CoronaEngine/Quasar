@@ -77,7 +77,7 @@ def process_chat_request(payload: Any) -> Dict[str, Any]:
                 clean_part["parameter"] = part["parameter"]
 
             # 构造助手消息传递媒体信息
-            assistant_msg = wrap_part_as_assistant_message(clean_part, session_id)
+            assistant_msg = wrap_part_as_assistant_message(clean_part)
             artificial_assistant_messages.append(assistant_msg)
 
             # 确保有文本块存在再追加提示

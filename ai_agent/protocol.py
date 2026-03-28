@@ -2,46 +2,10 @@
 
 from __future__ import annotations
 import json
-import base64
-import mimetypes
 
 from typing import Any, Dict, List
-from urllib.request import url2pathname
-from urllib.parse import urlparse
 
 from langchain_core.messages import AIMessage, ToolMessage
-
-
-def file_url_to_data_uri(file_url):
-    """
-    如果输入是 file:// URL，则转换为 Data URI (base64)；
-    否则（如 http:// 或普通路径）原样返回输入。
-    """
-    # 1. 解析 URL
-    parsed = urlparse(file_url)
-
-    # [新增判定] 如果协议不是 file (例如 http, https, 或无协议头)，直接返回原字符串
-    if parsed.scheme != "file":
-        return file_url
-
-    # 2. 转换为本地系统路径
-    file_path = url2pathname(parsed.path)
-
-    try:
-        # 3. 自动判断 MIME 类型
-        mime_type, _ = mimetypes.guess_type(file_path)
-        if not mime_type:
-            mime_type = "application/octet-stream"
-
-        # 4. 读取并编码
-        with open(file_path, "rb") as f:
-            base64_data = base64.b64encode(f.read()).decode("utf-8")
-            return f"data:{mime_type};base64,{base64_data}"
-
-    except (FileNotFoundError, PermissionError):
-        # 可选：如果文件不存在或无权读取，也可选择原样返回或抛出异常
-        # 这里保持原样返回作为一种容错策略，或者你可以 raise
-        return file_url
 
 
 def extract_session_id(payload: Any, default_session: str) -> str:
@@ -63,19 +27,18 @@ def extract_user_parts(payload: Any) -> List[Dict[str, Any]]:
     return []
 
 
-def wrap_part_as_assistant_message(part: Dict[str, Any], session_id: str) -> AIMessage:
+def wrap_part_as_assistant_message(part: Dict[str, Any]) -> AIMessage:
     """
     将 part 封装为助手消息，用于向 LLM 传递用户上传的媒体资源。
 
     Args:
         part: 媒体资源部分
-        session_id: 当前会话ID
 
     Returns:
         AIMessage: 包含媒体信息的助手消息
     """
     content_type = part.get("content_type", "unknown")
-    content_url = part.get("content_file", "")
+    content_url = part.get("content_url") or part.get("content_file", "")
     content_text = part.get("content_text", "")
 
     # 构建简洁的文本描述
@@ -191,6 +154,4 @@ __all__ = [
     "extract_assistant_messages",
     "extract_tool_media_parts",
     "build_media_history_assistant_message",
-    # 以下项保留用于内部或向后兼容
-    "file_url_to_data_uri",
 ]
