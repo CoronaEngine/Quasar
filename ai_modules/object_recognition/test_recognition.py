@@ -13,18 +13,27 @@
 
 from __future__ import annotations
 
+import builtins
 import logging
 import os
+import sys
 import tempfile
 
 import numpy as np
 
-# 配置日志，方便查看调试信息
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
+
+def print(*args, **kwargs):
+    builtins.print(*args, **kwargs)
+
+    file = kwargs.get("file", None)
+    if file not in (None, sys.stdout, sys.stderr):
+        return
+
+    sep = kwargs.get("sep", " ")
+    message = sep.join(str(a) for a in args).strip()
+    if message:
+        logger.info(message)
 
 
 # ====================================================================== #
@@ -141,14 +150,19 @@ def test_embedding_model():
     print("=" * 60)
 
     import torch
+
     print(f"  PyTorch 版本: {torch.__version__}")
     print(f"  CUDA 可用: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
-        print(f"  显存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        print(
+            f"  显存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB"
+        )
 
     from ai_modules.object_recognition.configs.dataclasses import EmbeddingModelConfig
-    from ai_modules.object_recognition.tools.client_embedding import Qwen3VLEmbeddingClient
+    from ai_modules.object_recognition.tools.client_embedding import (
+        Qwen3VLEmbeddingClient,
+    )
 
     # 使用默认 2B 配置（禁用 Flash Attention，Windows 下 flash_attn 不易安装）
     config = EmbeddingModelConfig(use_flash_attention=False)
@@ -318,6 +332,7 @@ def test_auto_scan():
 
     # 写入假图片文件（内容不重要，扫描只检查扩展名）
     from PIL import Image
+
     for name in ["front.jpg", "back.jpg", "left.png"]:
         img = Image.new("RGB", (64, 64), color="white")
         img.save(os.path.join(cup_dir, name))
@@ -329,7 +344,9 @@ def test_auto_scan():
     img.save(os.path.join(hidden_dir, "secret.jpg"))
 
     print(f"  临时目录: {scan_dir}")
-    print(f"  子文件夹: cup_001 (3 图), chair_001 (2 图), empty_box (0 图), .hidden (1 图)")
+    print(
+        "  子文件夹: cup_001 (3 图), chair_001 (2 图), empty_box (0 图), .hidden (1 图)"
+    )
 
     dim = 128
     db = VectorDB(db_path=db_path, vector_dim=dim)
@@ -337,6 +354,7 @@ def test_auto_scan():
     # ── 创建 Mock 嵌入客户端 ──
     class MockEmbeddingClient:
         """用随机向量模拟嵌入，避免加载 GPU 模型"""
+
         def embed_for_storage(self, image_paths, text=""):
             return normalize_vector(np.random.randn(dim).astype(np.float32))
 
@@ -357,7 +375,9 @@ def test_auto_scan():
     assert stats_a["scanned"] == 3, f"期望扫描 3 个子文件夹，实际 {stats_a['scanned']}"
     assert stats_a["warned"] == 2, f"期望警告 2 (cup+chair)，实际 {stats_a['warned']}"
     assert stats_a["skipped"] == 1, f"期望跳过 1 (empty)，实际 {stats_a['skipped']}"
-    assert stats_a["registered"] == 0, f"开关关闭时不应入库，实际 {stats_a['registered']}"
+    assert (
+        stats_a["registered"] == 0
+    ), f"开关关闭时不应入库，实际 {stats_a['registered']}"
     assert db.count() == 0, f"数据库应为空，实际 {db.count()}"
     print("    验证通过: 未入库，仅输出警告 ✓")
 
@@ -374,7 +394,9 @@ def test_auto_scan():
     stats_b = scan_and_register(cfg_embed, db, mock_client)
     print(f"    统计: {stats_b}")
     assert stats_b["scanned"] == 3, f"期望扫描 3，实际 {stats_b['scanned']}"
-    assert stats_b["registered"] == 2, f"期望入库 2 (cup+chair)，实际 {stats_b['registered']}"
+    assert (
+        stats_b["registered"] == 2
+    ), f"期望入库 2 (cup+chair)，实际 {stats_b['registered']}"
     assert stats_b["skipped"] == 1, f"期望跳过 1 (empty)，实际 {stats_b['skipped']}"
     assert len(stats_b["errors"]) == 0, f"不应有错误，实际 {stats_b['errors']}"
     assert db.count() == 2, f"数据库应有 2 条记录，实际 {db.count()}"
@@ -396,9 +418,9 @@ def test_auto_scan():
     print("\n  [场景 C] 重复扫描 → 已登记的应跳过")
     stats_c = scan_and_register(cfg_embed, db, mock_client)
     print(f"    统计: {stats_c}")
-    assert stats_c["already_registered"] == 2, (
-        f"期望已登记 2，实际 {stats_c['already_registered']}"
-    )
+    assert (
+        stats_c["already_registered"] == 2
+    ), f"期望已登记 2，实际 {stats_c['already_registered']}"
     assert stats_c["registered"] == 0, f"不应新增入库，实际 {stats_c['registered']}"
     assert db.count() == 2, f"数据库仍应有 2 条记录，实际 {db.count()}"
     print("    验证通过: 重复扫描正确跳过 ✓")
@@ -419,9 +441,9 @@ def test_auto_scan():
     stats_d = scan_and_register(cfg_limit, db, mock_client)
     cup = db.get_object("cup_001")
     assert cup is not None
-    assert len(cup["image_paths"]) == 1, (
-        f"max_images=1 时应只取 1 张，实际 {len(cup['image_paths'])}"
-    )
+    assert (
+        len(cup["image_paths"]) == 1
+    ), f"max_images=1 时应只取 1 张，实际 {len(cup['image_paths'])}"
     print(f"    cup_001 图片数: {len(cup['image_paths'])} ✓")
     print("    验证通过: max_images 限制生效 ✓")
 
@@ -444,7 +466,9 @@ if __name__ == "__main__":
         test_vector_db()
     except Exception as e:
         print(f"\n  ✗ 向量数据库测试失败: {e}")
-        import traceback; traceback.print_exc()
+        import traceback
+
+        traceback.print_exc()
         print("\n  提示: pip install sqlite-vec numpy")
 
     # 测试 2: 嵌入模型（需要 GPU）
@@ -452,22 +476,30 @@ if __name__ == "__main__":
         test_embedding_model()
     except Exception as e:
         print(f"\n  ✗ 嵌入模型测试失败: {e}")
-        import traceback; traceback.print_exc()
-        print("\n  提示: 确认 GPU 可用，已安装 torch/transformers/bitsandbytes/accelerate")
+        import traceback
+
+        traceback.print_exc()
+        print(
+            "\n  提示: 确认 GPU 可用，已安装 torch/transformers/bitsandbytes/accelerate"
+        )
 
     # 测试 3: 端到端
     try:
         test_end_to_end()
     except Exception as e:
         print(f"\n  ✗ 端到端测试失败: {e}")
-        import traceback; traceback.print_exc()
+        import traceback
+
+        traceback.print_exc()
 
     # 测试 4: 目录自动扫描（无需 GPU）
     try:
         test_auto_scan()
     except Exception as e:
         print(f"\n  ✗ 目录自动扫描测试失败: {e}")
-        import traceback; traceback.print_exc()
+        import traceback
+
+        traceback.print_exc()
 
     print("\n" + "=" * 60)
     print("  全部测试完成")

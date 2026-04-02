@@ -92,6 +92,12 @@ def reload_ai_config() -> AIConfig:
     global _AI_CACHE
     with _AI_CONFIG_LOCK:
         _AI_CACHE = _build_ai_config()
+        try:
+            from ai_models.base_pool.registry import reset_pool_registry
+
+            reset_pool_registry()
+        except Exception:
+            pass
     return _AI_CACHE
 
 

@@ -26,8 +26,7 @@ import logging
 import os
 import sqlite3
 import threading
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 

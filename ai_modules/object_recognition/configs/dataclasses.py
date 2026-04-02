@@ -5,9 +5,13 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 from config.app_config import get_app_config
+
+
+def _default_assets_model_path() -> str:
+    """从全局路径配置获取物体识别模型默认路径。"""
+    return str(get_app_config().paths.assets_model_dir)
 
 
 def _default_vector_db_path() -> str:
@@ -52,7 +56,8 @@ class RecognitionConfig:
     # 是否启用物体识别模块
     enable: bool = False
     # 嵌入模型配置
-    embedding: EmbeddingModelConfig = field(default_factory=EmbeddingModelConfig)
+    embedding: EmbeddingModelConfig = \
+        field(default_factory=EmbeddingModelConfig)
     # 向量数据库配置
     vector_db: VectorDBConfig = field(default_factory=VectorDBConfig)
     # 每个物体的标准图片数量（六面图）
@@ -60,13 +65,14 @@ class RecognitionConfig:
     # 存储侧非对称指令
     storage_instruction: str = "Represent this document for retrieval:"
     # 查询侧非对称指令
-    query_instruction: str = "Represent the query for retrieving relevant documents:"
+    query_instruction: str = \
+        "Represent the query for retrieving relevant documents:"
 
     # ── 目录自动扫描配置 ──
     # 扫描根目录路径（空字符串表示不扫描）
-    auto_scan_dir: str = ""
+    auto_scan_dir: str = field(default_factory=_default_assets_model_path)
     # 是否自动嵌入并入库未登记的子文件夹（False 时仅输出警告）
-    auto_scan_embed: bool = False
+    auto_scan_embed: bool = True
     # 每个子文件夹最多读取的图片数量
     auto_scan_max_images: int = 6
 

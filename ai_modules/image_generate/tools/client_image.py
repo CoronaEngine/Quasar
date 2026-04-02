@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from ai_modules.providers.configs.dataclasses import ProviderConfig
+
 # from config.ai_config import ProviderConfig
 from ai_models.utils import (
     retry_operation,
@@ -13,6 +14,9 @@ from ai_models.utils import (
     file_url_to_data_uri,
 )
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 # 全局共享 HTTP 客户端连接池（线程安全）
 _IMAGE_HTTP_CLIENT: Optional[httpx.Client] = None
@@ -44,19 +48,11 @@ class LingyaImageClient(BaseAPIClient):
         self, *, provider: ProviderConfig, model: str, base_url: str | None
     ) -> None:
         super().__init__(provider, base_url)
+
         self.model = model
 
         if not self.base_url:
             raise RuntimeError(f"Provider '{provider.name}' 缺少 base_url。")
-
-        self.generation_url = self.base_url
-
-        # 确定编辑接口 URL
-        if self.generation_url.endswith("/images/generations"):
-            self.edit_url = self.generation_url
-        else:
-            fallback = self.provider.base_url
-            self.edit_url = fallback.rstrip("/") if fallback else self.generation_url
 
     def generate(
         self,
@@ -66,56 +62,50 @@ class LingyaImageClient(BaseAPIClient):
         image_urls: Optional[List[str]] = None,
         image_size: Optional[str] = None,
     ) -> Tuple[str, str]:
-        """根据可用素材自动选择生成或编辑模式。返回 (image_url, mime_type)"""
         images_data = self._collect_image_data(image_urls)
-        if images_data:
-            return self._generate_with_images(prompt=prompt, images=images_data)
-        return self._generate_from_text(
-            prompt=prompt, resolution=resolution, image_size=image_size
+
+        logger.info(
+            "图像生成配置："
+            f"基础 URL: {self.base_url}, api_key: {self.api_key}"
         )
 
-    @retry_operation(max_retries=3)
-    def _generate_from_text(
-        self, *, prompt: str, resolution: str, image_size: Optional[str] = None
+        return self._generate_request(
+            prompt=prompt,
+            resolution=resolution,
+            images=images_data or None,
+            image_size=image_size,
+        )
+
+    @retry_operation(max_retries=1)
+    def _generate_request(
+        self,
+        *,
+        prompt: str,
+        resolution: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        image_size: Optional[str] = None,
     ) -> Tuple[str, str]:
-        payload = {
+        payload: Dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
-            "response_format": "url",  # 明确要求返回URL而不是base64
-            "aspect_ratio": resolution,  # 使用传入的比例参数
+            "response_format": "url",
         }
-        # 仅当模型为 nano-banana-pro 且提供了 image_size 时才添加该参数
-        if self.model == "nano-banana-pro" and image_size:
-            payload["image_size"] = image_size
+
+        if images:
+            payload["image"] = images
+        else:
+            if not resolution:
+                raise ValueError(
+                    "resolution 不能为空（纯文本生成模式需要 aspect_ratio）。"
+                )
+            payload["aspect_ratio"] = resolution
+            if self.model == "nano-banana-pro" and image_size:
+                payload["image_size"] = image_size
 
         client = _get_image_http_client()
         response = client.post(
-            self.generation_url,
-            json=payload,
-            headers=self.headers,
-            timeout=150,
+            self.base_url, json=payload, headers=self.headers, timeout=150
         )
-        response.raise_for_status()
-        return self._parse_response(response.json())
-
-    @retry_operation(max_retries=3)
-    def _generate_with_images(
-        self, *, prompt: str, images: List[str]
-    ) -> Tuple[str, str]:
-        url = self.edit_url.rstrip("/")
-        if not url.endswith("/images/edits") and not url.endswith(
-            "/images/generations"
-        ):
-            url = f"{url}/images/generations"  # 图生图也用generations接口
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "image": images,
-            "response_format": "url",  # 明确要求返回URL
-            # 图生图时不支持aspect_ratio设置
-        }
-        client = _get_image_http_client()
-        response = client.post(url, json=payload, headers=self.headers, timeout=150)
         response.raise_for_status()
         return self._parse_response(response.json())
 
@@ -151,6 +141,7 @@ class LingyaImageClient(BaseAPIClient):
             # 如果是 fileid:// URL，解析为真实 URL
             if source.startswith("fileid://"):
                 from ai_media_resource import get_media_registry
+
                 file_id = source[9:].lstrip("/")
                 try:
                     resolved_url = get_media_registry().resolve(file_id, timeout=150.0)
@@ -166,7 +157,10 @@ class LingyaImageClient(BaseAPIClient):
                 except Exception as e:
                     # 记录错误但不中断整个流程
                     import logging
-                    logging.getLogger(__name__).error(f"解析 file_id {file_id} 失败: {e}")
+
+                    logging.getLogger(__name__).error(
+                        f"解析 file_id {file_id} 失败: {e}"
+                    )
                     continue
             # 如果是HTTP(S) URL，直接使用
             elif source.startswith(("http://", "https://")):

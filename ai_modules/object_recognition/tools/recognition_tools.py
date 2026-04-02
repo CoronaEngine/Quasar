@@ -10,12 +10,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any, Dict, List, Optional
-
-from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
+from typing import Any, List, Optional
 
 from ai_config.ai_config import AIConfig
 from ai_tools.response_adapter import (
@@ -35,60 +31,12 @@ from ai_modules.object_recognition.configs.prompts import (
 
 logger = logging.getLogger(__name__)
 
-
-# ====================================================================== #
-#  Pydantic 输入模型
-# ====================================================================== #
-
-
-class StoreObjectInput(BaseModel):
-    """物体入库工具的输入参数"""
-
-    object_id: str = Field(
-        ...,
-        description=STORE_OBJECT_PROMPTS.fields["object_id"],
-    )
-    image_paths: List[str] = Field(
-        ...,
-        description=STORE_OBJECT_PROMPTS.fields["image_paths"],
-    )
-    name: str = Field(
-        default="",
-        description=STORE_OBJECT_PROMPTS.fields["name"],
-    )
-    category: str = Field(
-        default="",
-        description=STORE_OBJECT_PROMPTS.fields["category"],
-    )
-    description: str = Field(
-        default="",
-        description=STORE_OBJECT_PROMPTS.fields["description"],
-    )
-
-
-class SearchObjectInput(BaseModel):
-    """物体搜索工具的输入参数"""
-
-    query_images: List[str] = Field(
-        default_factory=list,
-        description=SEARCH_OBJECT_PROMPTS.fields["query_images"],
-    )
-    query_text: str = Field(
-        default="",
-        description=SEARCH_OBJECT_PROMPTS.fields["query_text"],
-    )
-    top_k: int = Field(
-        default=5,
-        description=SEARCH_OBJECT_PROMPTS.fields["top_k"],
-    )
-
-
 # ====================================================================== #
 #  工具加载函数
 # ====================================================================== #
 
 
-def load_recognition_tools(config: AIConfig) -> List[StructuredTool]:
+def load_recognition_tools(config: AIConfig) -> List[Any]:
     """
     加载物体识别相关工具。
 
@@ -107,6 +55,50 @@ def load_recognition_tools(config: AIConfig) -> List[StructuredTool]:
     if not recognition_cfg.enable:
         logger.info("物体识别模块未启用，跳过工具加载")
         return []
+
+    try:
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel, Field
+    except ImportError as e:
+        raise RuntimeError(
+            "物体识别模块依赖缺失，请安装: pip install langchain-core pydantic"
+        ) from e
+
+    class StoreObjectInput(BaseModel):
+        object_id: str = Field(
+            ...,
+            description=STORE_OBJECT_PROMPTS.fields["object_id"],
+        )
+        image_paths: List[str] = Field(
+            ...,
+            description=STORE_OBJECT_PROMPTS.fields["image_paths"],
+        )
+        name: str = Field(
+            default="",
+            description=STORE_OBJECT_PROMPTS.fields["name"],
+        )
+        category: str = Field(
+            default="",
+            description=STORE_OBJECT_PROMPTS.fields["category"],
+        )
+        description: str = Field(
+            default="",
+            description=STORE_OBJECT_PROMPTS.fields["description"],
+        )
+
+    class SearchObjectInput(BaseModel):
+        query_images: List[str] = Field(
+            default_factory=list,
+            description=SEARCH_OBJECT_PROMPTS.fields["query_images"],
+        )
+        query_text: str = Field(
+            default="",
+            description=SEARCH_OBJECT_PROMPTS.fields["query_text"],
+        )
+        top_k: int = Field(
+            default=5,
+            description=SEARCH_OBJECT_PROMPTS.fields["top_k"],
+        )
 
     # 延迟导入，避免在模块未启用时加载重型依赖
     from ai_modules.object_recognition.tools.client_embedding import (
@@ -215,14 +207,14 @@ def load_recognition_tools(config: AIConfig) -> List[StructuredTool]:
 
         except ValueError as e:
             logger.error(f"物体入库参数错误: {e}")
-            return build_error_result(
-                error_message=f"入库失败: {e}"
-            ).to_envelope(interface_type="object_recognition")
+            return build_error_result(error_message=f"入库失败: {e}").to_envelope(
+                interface_type="object_recognition"
+            )
         except Exception as e:
             logger.error(f"物体入库异常: {e}")
-            return build_error_result(
-                error_message=f"入库异常: {e}"
-            ).to_envelope(interface_type="object_recognition")
+            return build_error_result(error_message=f"入库异常: {e}").to_envelope(
+                interface_type="object_recognition"
+            )
 
     # ── 物体搜索工具 ────────────────────────────────────────────────
 
@@ -277,14 +269,16 @@ def load_recognition_tools(config: AIConfig) -> List[StructuredTool]:
                     f"  (距离: {r['distance']:.6f})"
                     f"  分类: {r['category'] or '(无)'}"
                 )
-                match_list.append({
-                    "rank": i,
-                    "object_id": r["object_id"],
-                    "name": r["name"],
-                    "category": r["category"],
-                    "distance": r["distance"],
-                    "description": r["description"],
-                })
+                match_list.append(
+                    {
+                        "rank": i,
+                        "object_id": r["object_id"],
+                        "name": r["name"],
+                        "category": r["category"],
+                        "distance": r["distance"],
+                        "description": r["description"],
+                    }
+                )
 
             result_text = "\n".join(lines)
             part = build_part(
@@ -303,9 +297,9 @@ def load_recognition_tools(config: AIConfig) -> List[StructuredTool]:
 
         except Exception as e:
             logger.error(f"物体搜索异常: {e}")
-            return build_error_result(
-                error_message=f"搜索异常: {e}"
-            ).to_envelope(interface_type="object_recognition")
+            return build_error_result(error_message=f"搜索异常: {e}").to_envelope(
+                interface_type="object_recognition"
+            )
 
     # ── 构建 StructuredTool 列表 ────────────────────────────────────
 
@@ -349,8 +343,14 @@ def _extract_recognition_config(config: AIConfig) -> RecognitionConfig:
             embedding_raw = raw.get("embedding", {})
             vector_db_raw = raw.get("vector_db", {})
 
-            embedding_cfg = EmbeddingModelConfig(**embedding_raw) if embedding_raw else EmbeddingModelConfig()
-            vector_db_cfg = VectorDBConfig(**vector_db_raw) if vector_db_raw else VectorDBConfig()
+            embedding_cfg = (
+                EmbeddingModelConfig(**embedding_raw)
+                if embedding_raw
+                else EmbeddingModelConfig()
+            )
+            vector_db_cfg = (
+                VectorDBConfig(**vector_db_raw) if vector_db_raw else VectorDBConfig()
+            )
 
             return RecognitionConfig(
                 enable=raw.get("enable", False),
@@ -383,6 +383,4 @@ def _extract_recognition_config(config: AIConfig) -> RecognitionConfig:
 
 __all__ = [
     "load_recognition_tools",
-    "StoreObjectInput",
-    "SearchObjectInput",
 ]
