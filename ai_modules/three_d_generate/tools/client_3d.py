@@ -5,8 +5,7 @@ import base64
 import re
 import logging
 import threading
-from typing import Any, Dict, List, Optional, Tuple
-
+from typing import Any, Dict, List, Optional
 import httpx
 
 
@@ -27,6 +26,12 @@ class Rodin3DClient:
         self.timeout = timeout
         self.extra_headers = extra_headers or {}
         self._generation_lock = threading.Lock()
+
+        logger.info(
+            "Initialized Rodin3DClient with base_url=%s api_key=%s",
+            self.base_url,
+            self.api_key[:8] + "****" if self.api_key else "(空)",
+        )
 
     def _headers(self) -> Dict[str, str]:
         h = dict(self.extra_headers)
@@ -93,13 +98,17 @@ class Rodin3DClient:
                 image_ref = local_path  # 🔥 关键：从此只走“本地文件”分支
 
             except Exception as e:
-                raise ValueError(f"无法处理 fileid 图片输入: {image_ref}, err={e}") from e
+                raise ValueError(
+                    f"无法处理 fileid 图片输入: {image_ref}, err={e}"
+                ) from e
 
         # -------------------------------------------------
         # 2️⃣ data:image/...;base64
         # -------------------------------------------------
         if image_ref.startswith("data:image/"):
-            m = re.match(r"^data:(image/[\w\+\-\.]+);base64,(.+)$", image_ref, re.I | re.S)
+            m = re.match(
+                r"^data:(image/[\w\+\-\.]+);base64,(.+)$", image_ref, re.I | re.S
+            )
             if not m:
                 raise ValueError("不合法的 data URI 图片输入")
             mime = m.group(1).lower()
@@ -137,10 +146,13 @@ class Rodin3DClient:
             filename = os.path.basename(image_ref)
             ext = os.path.splitext(filename)[1].lower()
             mime = (
-                "image/jpeg" if ext in [".jpg", ".jpeg"]
-                else "image/png" if ext == ".png"
-                else "image/webp" if ext == ".webp"
-                else "application/octet-stream"
+                "image/jpeg"
+                if ext in [".jpg", ".jpeg"]
+                else (
+                    "image/png"
+                    if ext == ".png"
+                    else "image/webp" if ext == ".webp" else "application/octet-stream"
+                )
             )
             with open(image_ref, "rb") as f:
                 return filename, f.read(), mime
@@ -154,6 +166,7 @@ class Rodin3DClient:
         # ------------------------------------------------------------------
         # 你原来的 submit/status/download 保持不变（如果没有就照你现有文件）
         # ------------------------------------------------------------------
+
     def submit_generation(
         self,
         *,
@@ -162,11 +175,12 @@ class Rodin3DClient:
         form_fields: Dict[str, Any],
     ) -> Dict[str, Any]:
         endpoint = f"{self.base_url}{generate_path}"
-        
+
         # images = [r"F:\GitHub\CoronaEngine\build\examples\engine\RelWithDebInfo\assets\fox\02.jpg"]
 
         form_fields = {
-            k: v for k, v in (form_fields or {}).items()
+            k: v
+            for k, v in (form_fields or {}).items()
             if v is not None and str(v).strip() != ""
         }
 
@@ -174,7 +188,7 @@ class Rodin3DClient:
         files = None
         if images:
             fn, data, mime = self._coerce_image_to_file_tuple(str(images[0]))
-            files = [("images", (fn, data, mime))]   # 关键：image 而不是 images
+            files = [("images", (fn, data, mime))]  # 关键：image 而不是 images
 
         # files = {}
         # if images:
@@ -197,12 +211,18 @@ class Rodin3DClient:
             r.raise_for_status()
             return r.json()
 
-    def check_status(self, *, status_path: str, subscription_key: str) -> Dict[str, Any]:
+    def check_status(
+        self, *, status_path: str, subscription_key: str
+    ) -> Dict[str, Any]:
         endpoint = f"{self.base_url}{status_path}"
         with httpx.Client(timeout=self.timeout) as client:
             r = client.post(
                 endpoint,
-                headers={**self._headers(), "Content-Type": "application/json", "accept": "application/json"},
+                headers={
+                    **self._headers(),
+                    "Content-Type": "application/json",
+                    "accept": "application/json",
+                },
                 json={"subscription_key": subscription_key},
             )
             r.raise_for_status()
@@ -213,25 +233,72 @@ class Rodin3DClient:
         with httpx.Client(timeout=self.timeout) as client:
             r = client.post(
                 endpoint,
-                headers={**self._headers(), "Content-Type": "application/json", "accept": "application/json"},
+                headers={
+                    **self._headers(),
+                    "Content-Type": "application/json",
+                    "accept": "application/json",
+                },
                 json={"task_uuid": task_uuid},
             )
             r.raise_for_status()
-            data = r.json()
+            raw = r.json()
+
+        # 兼容不同的 API 返回格式
+        if isinstance(raw, dict):
+            if "data" in raw:
+                data_node = raw.get("data")
+                if isinstance(data_node, dict):
+                    download_list = data_node.get("list") or data_node.get("files") or []
+                elif isinstance(data_node, list):
+                    download_list = data_node
+                else:
+                    download_list = []
+            else:
+                download_list = raw.get("list") or raw.get("files") or []
+        elif isinstance(raw, list):
+            download_list = raw
+        else:
+            download_list = []
+
+        if not isinstance(download_list, list):
+            raise RuntimeError(
+                f"Rodin download 返回内容格式不合法: {type(download_list).__name__}"
+            )
 
         items: List[Dict[str, str]] = []
-        for it in (data.get("list", []) or []):
-            url = it.get("url")
-            name = it.get("name") or "output"
-            if url:
-                items.append({"name": name, "url": url})
+        for it in download_list:
+            if isinstance(it, str):
+                url = it
+                name = "output"
+            elif isinstance(it, dict):
+                url = it.get("url") or it.get("content_url") or it.get("file_url")
+                name = it.get("name") or it.get("filename") or "output"
+            else:
+                continue
+
+            if not url:
+                continue
+
+            url = url.strip()
+            if url.startswith("fileid://"):
+                # 兼容 fileid 直接返回
+                url = f"{url}"
+            elif url.startswith("//"):
+                url = f"https:{url}"
+            elif not url.startswith("http"):
+                url = f"{self.base_url}{url}"
+
+            items.append({"name": name, "url": url})
+
         return items
 
     # ------------------------------------------------------------------
     # ✅ 关键 2：补齐 integrated 需要的 run_to_download_urls
     # ------------------------------------------------------------------
     @staticmethod
-    def _extract_task_specific_jobs(status_response: Dict[str, Any], task_uuid: str) -> List[Dict[str, Any]]:
+    def _extract_task_specific_jobs(
+        status_response: Dict[str, Any], task_uuid: str
+    ) -> List[Dict[str, Any]]:
         """尽量从状态返回中筛出当前 task 的 jobs，避免并发请求互相影响。"""
         job_list = status_response.get("jobs") or []
         if not isinstance(job_list, list):
@@ -253,11 +320,12 @@ class Rodin3DClient:
         for job in job_list:
             if not isinstance(job, dict):
                 continue
-            if any(str(job.get(key, "")).strip() == task_uuid for key in candidate_keys):
+            if any(
+                str(job.get(key, "")).strip() == task_uuid for key in candidate_keys
+            ):
                 matched_jobs.append(job)
 
         return matched_jobs
-
 
     def run_to_download_urls(
         self,
@@ -285,10 +353,14 @@ class Rodin3DClient:
 
             task_uuid = submit.get("uuid") or submit.get("task_uuid")
             jobs = submit.get("jobs") or {}
-            subscription_key = jobs.get("subscription_key") if isinstance(jobs, dict) else None
+            subscription_key = (
+                jobs.get("subscription_key") if isinstance(jobs, dict) else None
+            )
 
             if not task_uuid or not subscription_key:
-                raise RuntimeError(f"Rodin 提交返回缺少 uuid/subscription_key: {submit}")
+                raise RuntimeError(
+                    f"Rodin 提交返回缺少 uuid/subscription_key: {submit}"
+                )
 
             logger.info(
                 "Rodin submit accepted task_uuid=%s subscription_key=%s",
@@ -297,11 +369,16 @@ class Rodin3DClient:
             )
 
             start = time.time()
+            last_statuses = None  # 记录上次状态，避免重复日志
             while True:
                 if time.time() - start > poll_timeout:
-                    raise TimeoutError(f"Rodin 任务超时（>{poll_timeout}s），task_uuid={task_uuid}")
+                    raise TimeoutError(
+                        f"Rodin 任务超时（>{poll_timeout}s），task_uuid={task_uuid}"
+                    )
 
-                st = self.check_status(status_path=status_path, subscription_key=subscription_key)
+                st = self.check_status(
+                    status_path=status_path, subscription_key=subscription_key
+                )
                 matched_jobs = self._extract_task_specific_jobs(st, str(task_uuid))
                 job_list = matched_jobs or (st.get("jobs") or [])
                 statuses = []
@@ -309,25 +386,52 @@ class Rodin3DClient:
                     if isinstance(j, dict):
                         statuses.append(j.get("status"))
 
-                if matched_jobs:
-                    logger.debug(
-                        "Rodin status task_uuid=%s matched_jobs=%s statuses=%s",
-                        task_uuid,
-                        len(matched_jobs),
-                        statuses,
-                    )
-                elif st.get("jobs"):
-                    logger.warning(
-                        "Rodin status 未找到 task_uuid=%s 对应 job，回退到 subscription 级状态: %s",
-                        task_uuid,
-                        statuses,
-                    )
+                # ✅ 只在状态改变时才输出日志，避免大量重复日志
+                if statuses != last_statuses:
+                    last_statuses = statuses
+                    if matched_jobs:
+                        logger.debug(
+                            "Rodin status task_uuid=%s matched_jobs=%s statuses=%s",
+                            task_uuid,
+                            len(matched_jobs),
+                            statuses,
+                        )
+                    elif st.get("jobs"):
+                        logger.warning(
+                            "Rodin status 未找到 task_uuid=%s 对应 job，回退到 subscription 级状态: %s",
+                            task_uuid,
+                            statuses,
+                        )
 
                 if any(s == "Failed" for s in statuses):
-                    raise RuntimeError(f"Rodin 任务失败：task_uuid={task_uuid}, status={st}")
+                    raise RuntimeError(
+                        f"Rodin 任务失败：task_uuid={task_uuid}, status={st}"
+                    )
 
                 if statuses and all(s == "Done" for s in statuses):
-                    downloads = self.download(download_path=download_path, task_uuid=task_uuid)
+                    downloads = self.download(
+                        download_path=download_path, task_uuid=task_uuid
+                    )
+
+                    # 轮询完成后下载接口可能有短暂一致性延迟
+                    if not downloads:
+                        logger.warning(
+                            "Rodin download 返回空列表，重试 3 次，task_uuid=%s",
+                            task_uuid,
+                        )
+                        for attempt in range(3):
+                            time.sleep(2)
+                            downloads = self.download(
+                                download_path=download_path, task_uuid=task_uuid
+                            )
+                            if downloads:
+                                break
+
+                    if not downloads:
+                        raise RuntimeError(
+                            f"Rodin 下载结果为空：task_uuid={task_uuid}, status={st}"
+                        )
+
                     return {
                         "task_uuid": task_uuid,
                         "subscription_key": subscription_key,

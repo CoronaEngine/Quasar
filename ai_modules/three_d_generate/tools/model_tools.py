@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import threading
 import httpx
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -11,11 +12,14 @@ from langchain_core.tools import StructuredTool
 
 from ai_config.ai_config import AIConfig
 from ai_media_resource import get_media_registry
-from ai_tools.response_adapter import build_part, build_success_result, build_error_result
+from ai_tools.context import get_current_session
+from ai_tools.response_adapter import (
+    build_part,
+    build_success_result,
+    build_error_result,
+)
 from config.app_config import get_app_config
-
 from ai_modules.three_d_generate.tools.client_3d import Rodin3DClient
-
 
 import re
 import urllib.parse
@@ -23,23 +27,33 @@ import urllib.parse
 _WIN_INVALID = r'[<>:"/\\|?*\x00-\x1F]'
 
 
-def _safe_dirname(s: str) -> str:
-    """Make a string safe to use as a directory name (Windows-friendly)."""
-    s = (s or "").strip()
-    # Normalize UUID like: 'xxxx - yyyy - ...' -> 'xxxx-yyyy-...'
-    s = re.sub(r"\s*-\s*", "-", s)
-    # Remove remaining whitespace
-    s = re.sub(r"\s+", "", s)
-    # Replace invalid characters
+def _sanitize_name(s: str, allow_spaces: bool = False) -> str:
+    """
+    通用文件/目录名清理函数
+    - allow_spaces=False: 用于目录名（删除空格）
+    - allow_spaces=True: 用于文件名（保留单个空格）
+    """
+    s = (s or "").strip().replace("\\", "_").replace("/", "_")
+    if not allow_spaces:
+        # 目录名模式：删除所有空格，归一化连字符
+        s = re.sub(r"\s*-\s*", "-", s)
+        s = re.sub(r"\s+", "", s)
+    else:
+        # 文件名模式：多个空格变单个
+        s = re.sub(r"\s+", " ", s).strip()
+    # 替换非法字符
     s = re.sub(_WIN_INVALID, "_", s)
     return s or "task"
 
 
+def _safe_dirname(s: str) -> str:
+    """目录名清理（删除所有空格）"""
+    return _sanitize_name(s, allow_spaces=False)
+
+
 def _safe_filename(name: str) -> str:
-    name = (name or "").strip().replace("\\", "_").replace("/", "_")
-    name = re.sub(r'[:*?"<>|]+', "_", name)
-    name = re.sub(r"\s+", " ", name).strip()
-    return name or "download.bin"
+    """文件名清理（保留单个空格）"""
+    return _sanitize_name(name, allow_spaces=True)
 
 
 def _filename_from_url(url: str) -> str:
@@ -58,7 +72,11 @@ def _download_url_to_dir(
     """下载 url 到 out_dir，返回保存后的绝对路径"""
     os.makedirs(out_dir, exist_ok=True)
 
-    filename = _safe_filename(preferred_filename) if preferred_filename else _filename_from_url(url)
+    filename = (
+        _safe_filename(preferred_filename)
+        if preferred_filename
+        else _filename_from_url(url)
+    )
     dest = os.path.join(out_dir, filename)
 
     # 避免覆盖：若已存在则追加序号
@@ -72,12 +90,43 @@ def _download_url_to_dir(
                 break
             i += 1
 
-    with httpx.stream("GET", url, follow_redirects=True, timeout=timeout) as r:
+    tmp_dest = dest + ".tmp"
+    if os.path.exists(tmp_dest):
+        try:
+            os.remove(tmp_dest)
+        except Exception:
+            pass
+
+    # 增强下载鲁棒性，避免 HTTP 连接中途断开导致残留不完整文件
+    with httpx.stream(
+        "GET",
+        url,
+        follow_redirects=True,
+        timeout=httpx.Timeout(timeout, connect=30.0, read=max(timeout, 300.0), write=max(timeout, 300.0)),
+    ) as r:
         r.raise_for_status()
-        with open(dest, "wb") as f:
-            for chunk in r.iter_bytes():
+        content_length = 0
+        try:
+            content_length = int(r.headers.get("content-length", "0"))
+        except (TypeError, ValueError):
+            content_length = 0
+
+        bytes_written = 0
+        with open(tmp_dest, "wb") as f:
+            for chunk in r.iter_bytes(chunk_size=65536):
                 if chunk:
                     f.write(chunk)
+                    bytes_written += len(chunk)
+            f.flush()
+            os.fsync(f.fileno())
+
+    if content_length > 0 and bytes_written < content_length:
+        os.remove(tmp_dest)
+        raise IOError(
+            f"文件下载不完整: {url}, 期待 {content_length} bytes, 实际 {bytes_written} bytes"
+        )
+
+    os.replace(tmp_dest, dest)
     return dest
 
 
@@ -106,16 +155,6 @@ class RodinGenerate3DInput(BaseModel):
     prompt: Optional[str] = Field(
         default=None,
         description="文本提示词。mode=text_to_3d 时必填",
-    )
-
-    object_id: Optional[str] = Field(
-        default=None,
-        description="可选：物体唯一标识，用于按 object_id 组织本地保存目录",
-    )
-
-    short_id: Optional[str] = Field(
-        default=None,
-        description="可选：用于输出文件命名的简短编号（例如 01/02）。不传则默认使用 01。",
     )
 
     condition_mode: str = Field(default="concat")
@@ -160,12 +199,86 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
 
     media_registry = get_media_registry()
 
+    # ==================== 后台异步函数 ====================
+    def _download_rest_files_async(
+        object_dir: Path,
+        repo_root: Path,
+        downloads: List[Dict[str, str]],
+        object_dir_name: str,
+        mode: str,
+        geometry_file_format: str,
+        tier: str,
+        quality: Optional[str],
+        batch_tag: str,
+        session_id: str,
+        registry,
+    ):
+        """后台异步下载 mesh 和其他非 preview 文件，并注册到资源管理器"""
+        logger = logging.getLogger(__name__)
+        try:
+            mesh_count = 0
+            for it in downloads:
+                url = str(it.get("url", "")).strip()
+                if not url:
+                    continue
+
+                ext = os.path.splitext(_filename_from_url(url))[1].lower() or ".bin"
+
+                # 只下 mesh 等，preview 已在前面处理过
+                if ext in {".webp", ".png", ".jpg", ".jpeg"}:
+                    continue
+
+                if ext in {".glb", ".gltf", ".obj", ".fbx"}:
+                    typ = "mesh"
+                    mesh_count += 1
+                    preferred = f"base{ext}"
+                    output_type = "file"
+                else:
+                    typ = ext
+                    preferred = f"{typ}_{batch_tag}{ext}"
+                    output_type = "file"
+
+                try:
+                    local_path = _download_url_to_dir(
+                        url,
+                        str(object_dir),
+                        timeout=float(threed_config.request_timeout),
+                        preferred_filename=preferred,
+                    )
+                    relative_path = _to_repo_relative_path(local_path, repo_root)
+
+                    # ✅ 关键：注册到资源管理器，使前端可以通过 fileid:// 访问
+                    file_id = registry.register(
+                        session_id=session_id,
+                        content_url=str(Path(local_path).resolve()),
+                        resource_type=output_type,
+                        content_text=relative_path,
+                        parameter={
+                            "additional_type": ["rodin_3d"],
+                            "object_id": object_dir_name,
+                            "mode": mode,
+                            "geometry_file_format": geometry_file_format,
+                            "tier": tier,
+                            "quality": quality,
+                            "name": it.get("name"),
+                            "short_id": "base" if typ == "mesh" else typ,
+                        },
+                    )
+
+                    logger.debug(f"后台下载+注册完成: {url} -> {relative_path} (file_id={file_id})")
+                except Exception as e:
+                    logger.warning(f"后台下载/注册失败: {url}, err={e}")
+
+            logger.info(f"Rodin 3D 后台异步下载完成: {object_dir}, mesh count={mesh_count}")
+
+        except Exception as e:
+            logger.error(f"Rodin 3D 后台下载异常: {e}")
+
+    # ==================== 主工具函数 ====================
     def _rodin_generate_3d(
         mode: str = "image_to_3d",
         images: Optional[List[str]] = None,
         prompt: Optional[str] = None,
-        object_id: Optional[str] = None,
-        short_id: Optional[str] = None,
         condition_mode: str = "concat",
         tier: str = "Regular",
         quality: Optional[str] = None,
@@ -175,12 +288,13 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
         addons: Optional[str] = None,
         download_dir: Optional[str] = None,
     ) -> str:
+        logger = logging.getLogger(__name__)
         try:
             mode = (mode or "").strip()
 
             # 解析 fileid:// -> http(s) url
             image_list: List[str] = []
-            for image in (images or []):
+            for image in images or []:
                 if isinstance(image, str) and image.startswith("fileid://"):
                     file_id = image[9:].strip()
                     # 阻塞等待异步任务完成，避免读取到空 content_url。
@@ -218,7 +332,7 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
                 poll_timeout=poll_timeout,
             )
 
-            logging.getLogger(__name__).info(
+            logger.info(
                 "Rodin 3D done task_uuid=%s downloads=%s",
                 result.get("task_uuid"),
                 len(result.get("downloads") or []),
@@ -231,7 +345,7 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
             cfg_download_dir = getattr(threed_config, "download_dir", None)
             env_download_dir = os.environ.get("RODIN_3D_DOWNLOAD_DIR")
             if download_dir or cfg_download_dir or env_download_dir:
-                logging.getLogger(__name__).warning(
+                logger.warning(
                     "3D 保存目录已固定为 assets/model，忽略 download_dir 配置: arg=%s, cfg=%s, env=%s",
                     download_dir,
                     cfg_download_dir,
@@ -239,64 +353,83 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
                 )
 
             # ✅ 不用 task_uuid 建目录，改用 batch 目录（时间戳）
-            object_dir_name = _safe_dirname(object_id or short_id or "object")
-            object_dir = assets_model_root / object_dir_name
-            object_dir.mkdir(parents=True, exist_ok=True)
-            batch_tag = str(int(time.time()))
-
-
-            # 输出文件命名：优先 short_id（例如 01/02）；不传则默认 01
-            base_id = (short_id or "").strip() or "01"
-            base_id = _safe_filename(base_id)
-
+            # 修改：根据第一个下载 URL 提取语义化目录名，优先使用有意义名字
             downloads = result.get("downloads") or []
             if not downloads:
                 raise RuntimeError("Rodin 未返回任何可下载文件（downloads 为空）")
 
-            # 输出文件命名：如果调用方传了 short_id 就用它；否则后面会自动递增
-            fixed_id = _safe_filename(str(short_id).strip()) if (short_id and str(short_id).strip()) else None
-            idx = 1
-            seen = set()   # 用于判断一组是否完整（mesh+preview）
-
-            parts = []
+            first_url = None
             for it in downloads:
+                if not isinstance(it, dict):
+                    continue
+                candidate = str(it.get("url") or it.get("content_url") or "").strip()
+                if candidate:
+                    first_url = candidate
+                    break
+
+            if first_url:
+                candidate_name = os.path.splitext(_filename_from_url(first_url))[0]
+                object_dir_name = _safe_dirname(candidate_name)
+            else:
+                object_dir_name = "模型"
+
+            # 避免目录冲突：存在则加后缀
+            original_dir_name = object_dir_name
+            suffix_idx = 1
+            while (assets_model_root / object_dir_name).exists():
+                object_dir_name = f"{original_dir_name}_{suffix_idx}"
+                suffix_idx += 1
+
+            object_dir = assets_model_root / object_dir_name
+            object_dir.mkdir(parents=True, exist_ok=True)
+            batch_tag = str(int(time.time()))
+
+            # ✅ 分离 preview 和 mesh 下载：preview 同步、mesh 后台
+            registry = get_media_registry()
+            session_id = get_current_session()
+
+            preview_items = []
+            rest_items = []
+
+            for it in downloads:
+                url = str(it.get("url", "")).strip()
+                if not url:
+                    continue
+                ext = os.path.splitext(_filename_from_url(url))[1].lower() or ".bin"
+
+                if ext in {".webp", ".png", ".jpg", ".jpeg"}:
+                    preview_items.append(it)
+                else:
+                    rest_items.append(it)
+
+            # ----- 第一阶段：同步下载 preview -----
+            preview_parts = []
+            preview_count = 0
+
+            for it in preview_items:
                 url = str(it.get("url", "")).strip()
                 if not url:
                     continue
 
                 ext = os.path.splitext(_filename_from_url(url))[1].lower() or ".bin"
+                preview_count += 1
+                preferred = f"{preview_count:04d}{ext}"
+                output_type = "image"
 
-                # 归类：用于自动递增分组（mesh+preview 算一组）
-                if ext in {".glb", ".gltf", ".obj", ".fbx"}:
-                    typ = "mesh"
-                elif ext in {".webp", ".png", ".jpg", ".jpeg"}:
-                    typ = "preview"
-                else:
-                    typ = ext
+                try:
+                    local_path = _download_url_to_dir(
+                        url,
+                        str(object_dir),
+                        timeout=float(threed_config.request_timeout),
+                        preferred_filename=preferred,
+                    )
+                    relative_path = _to_repo_relative_path(local_path, repo_root)
 
-                cur_id = fixed_id if fixed_id is not None else f"{idx:02d}"
-
-                if typ == "mesh":
-                    preferred = f"{object_dir_name}_{batch_tag}_{cur_id}{ext}"
-                    output_type = "file"
-                elif typ == "preview":
-                    preferred = f"{object_dir_name}_{batch_tag}_{cur_id}_preview{ext}"
-                    output_type = "image"
-                else:
-                    preferred = f"{object_dir_name}_{batch_tag}_{cur_id}_{typ}{ext}"
-                    output_type = "file"
-
-                local_path = _download_url_to_dir(
-                    url,
-                    str(object_dir),
-                    timeout=float(threed_config.request_timeout),
-                    preferred_filename=preferred,
-                )
-                relative_path = _to_repo_relative_path(local_path, repo_root)
-
-                parts.append(
-                    build_part(
-                        content_type=output_type,
+                    # 注册 preview 资源
+                    file_id = registry.register(
+                        session_id=session_id,
+                        content_url=str(Path(local_path).resolve()),
+                        resource_type=output_type,
                         content_text=relative_path,
                         parameter={
                             "additional_type": ["rodin_3d"],
@@ -306,26 +439,70 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
                             "tier": tier,
                             "quality": quality,
                             "name": it.get("name"),
-                            "short_id": cur_id,
+                            "short_id": str(preview_count),
                         },
                     )
+
+                    preview_parts.append(
+                        build_part(
+                            content_type=output_type,
+                            content_text=relative_path,
+                            file_id=file_id,
+                        )
+                    )
+
+                    logger.debug(f"预览图下载完成: {url} -> {relative_path}")
+
+                except Exception as e:
+                    logger.warning(f"预览图下载失败: {url}, err={e}")
+
+            # ---- 第二阶段：立即返回（只包含 preview + model_folder 信息）----
+            # 允许 preview 为空但有 mesh 的情况（后台会处理）
+            if not preview_parts and not rest_items:
+                raise RuntimeError("未能获取任何下载资源（既无预览图也无模型文件）")
+
+            model_folder_relative = _to_repo_relative_path(str(object_dir), repo_root)
+
+            # 启动后台线程继续下载 mesh 等，并注册到资源管理器
+            if rest_items:
+                bg_thread = threading.Thread(
+                    target=_download_rest_files_async,
+                    args=(
+                        object_dir,
+                        repo_root,
+                        rest_items,
+                        object_dir_name,
+                        mode,
+                        geometry_file_format,
+                        tier,
+                        quality,
+                        batch_tag,
+                        session_id,
+                        registry,
+                    ),
+                    daemon=True,
+                )
+                bg_thread.start()
+                logger.info(
+                    f"Rodin 3D 后台异步任务已启动: {object_dir}, 将下载并注册 {len(rest_items)} 个资源"
                 )
 
-                # ✅ 自动递增：当一个编号已经拿到 mesh+preview，就进入下一号
-                if fixed_id is None:
-                    seen.add(typ)
-                    if "mesh" in seen and "preview" in seen:
-                        idx += 1
-                        seen.clear()
-
-
-            if not parts:
-                raise RuntimeError("Rodin downloads 中没有有效 url，无法下载")
-
-            return build_success_result(parts=parts).to_envelope(interface_type="media")
+            # ---- 构造最终返回 ----
+            return build_success_result(
+                parts=preview_parts,
+                metadata={
+                    "model_folder": model_folder_relative,
+                    "object_id": object_dir_name,
+                    "task_uuid": result.get("task_uuid"),
+                    "preview_count": len(preview_parts),
+                    "has_mesh_pending": len(rest_items) > 0,
+                },
+            ).to_envelope(interface_type="media")
 
         except Exception as e:
-            return build_error_result(error_message=str(e)).to_envelope(interface_type="media")
+            return build_error_result(error_message=str(e)).to_envelope(
+                interface_type="media"
+            )
 
     return [
         StructuredTool(
