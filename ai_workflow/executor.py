@@ -151,12 +151,24 @@ def stream_workflow(
 
     session_id = state.get("session_id", "default")
     token = set_current_session(session_id)
-    checkpoints = checkpoint_nodes or set()
-    yielded_content_len = 0
 
     try:
+        # checkpoint_nodes 为 None 表示未注册检查点，退化为非流式：执行完毕后 yield 一次
+        if checkpoint_nodes is None:
+            logger.info(
+                f"Streaming workflow (no checkpoints, single-yield) "
+                f"function_id={function_id}, session={session_id}"
+            )
+            final_state: WorkflowState = graph.invoke(state)
+            yield format_response(final_state, interface_type=interface_type)
+            return
+
+        checkpoints = checkpoint_nodes
+        yielded_content_len = 0
+
         logger.info(
-            f"Streaming workflow function_id={function_id}, session={session_id}"
+            f"Streaming workflow function_id={function_id}, session={session_id}, "
+            f"checkpoints={checkpoints}"
         )
 
         for chunk in graph.stream(state, stream_mode="updates"):
@@ -193,7 +205,7 @@ def stream_workflow(
                 yield response
 
     except Exception as e:
-        logger.error(f"Streaming workflow execution failed: {e}")
+        logger.error(f"Streaming workflow execution failed: {e}", exc_info=True)
         yield build_error_response(
             interface_type=interface_type,
             session_id=session_id,
@@ -221,9 +233,6 @@ def stream_workflow_from_request(
 
     data = ensure_dict(request_data)
     function_id = extract_parameter(data, "function_id")
-
-    if function_id is None:
-        function_id = _detect_function_id_from_prompt(data)
 
     if function_id is None:
         return None
@@ -260,43 +269,6 @@ def register_workflow_checkpoints(
     )
 
 
-def _detect_function_id_from_prompt(data: dict) -> Optional[int]:
-    """根据用户输入文本前缀推断 function_id。
-
-    当前支持的前缀规则：
-    - "场景生成：" / "场景生成:" → 21000 (场景生成主工作流)
-
-    Returns:
-        匹配到的 function_id，无匹配返回 None
-    """
-    from ai_workflow.flows.scene_pipeline import (
-        SCENE_PIPELINE_FUNCTION_ID,
-    )
-
-    llm_content = data.get("llm_content")
-    if not isinstance(llm_content, list) or not llm_content:
-        return None
-
-    parts = llm_content[0].get("part", [])
-    for part in parts:
-        if part.get("content_type") == "text":
-            text = (part.get("content_text") or "").strip()
-            if text.startswith("场景生成：") or text.startswith("场景生成:"):
-                logger.info(
-                    "[Workflow] 检测到提示词前缀 '场景生成：'，"
-                    f"路由至 function_id={SCENE_PIPELINE_FUNCTION_ID}"
-                )
-                # 去掉前缀，保留实际需求文本
-                prefix_len = len("场景生成：")  # 全角/半角冒号长度相同(UTF-8)
-                part["content_text"] = text[prefix_len:].strip()
-                # 注入 function_id 到 part.parameter，供下游 parse_request 提取
-                params = part.setdefault("parameter", {})
-                params["function_id"] = SCENE_PIPELINE_FUNCTION_ID
-                return SCENE_PIPELINE_FUNCTION_ID
-
-    return None
-
-
 def run_workflow_from_request(
     request_data: Any,
     *,
@@ -305,7 +277,6 @@ def run_workflow_from_request(
     """从请求中提取 function_id 并执行工作流
 
     便捷方法，自动从 request_data 中解析 function_id。
-    当请求中未携带 function_id 时，会尝试根据用户提示词前缀自动推断。
 
     Args:
         request_data: 原始请求数据
@@ -322,10 +293,6 @@ def run_workflow_from_request(
     data = ensure_dict(request_data)
     function_id = extract_parameter(data, "function_id")
 
-    # 未携带 function_id 时，尝试通过提示词前缀推断
-    if function_id is None:
-        function_id = _detect_function_id_from_prompt(data)
-
     if function_id is None:
         logger.debug("No function_id found in request")
         return None
@@ -338,8 +305,6 @@ def run_workflow_from_request(
             logger.warning(f"Invalid function_id format: {function_id}")
             return None
 
-    # 传入 data 而非 request_data，确保前缀检测时的修改（注入 function_id、
-    # 剥离前缀）在下游 parse_request 中可见
     return run_workflow(function_id, data, interface_type=interface_type)
 
 

@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, TYPE_CHECKING
+from typing import Dict, TYPE_CHECKING
 
 from langgraph.graph import END, START, StateGraph
 
@@ -43,6 +43,7 @@ from ai_workflow.flows.model_retrieval_workflow import (
     register_node,
     format_result_node,
 )
+from ai_workflow.executor import register_workflow_checkpoints
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
@@ -112,8 +113,10 @@ WORKFLOWS: Dict[int, "CompiledStateGraph"] = {
     SCENE_PIPELINE_FUNCTION_ID: build_scene_pipeline(),
 }
 
-# 注册流式检查点：第一步完成时先输出设计方案
-from ai_workflow.executor import register_workflow_checkpoints
+WORKFLOW_COMMANDS: Dict[str, int] = {
+    "/scene": SCENE_PIPELINE_FUNCTION_ID,
+    "/scene_pipeline": SCENE_PIPELINE_FUNCTION_ID,
+}
 
 register_workflow_checkpoints(
     SCENE_PIPELINE_FUNCTION_ID,
@@ -122,6 +125,7 @@ register_workflow_checkpoints(
 
 __all__ = [
     "WORKFLOWS",
+    "WORKFLOW_COMMANDS",
     "SCENE_PIPELINE_FUNCTION_ID",
     "build_scene_pipeline",
 ]

@@ -9,7 +9,8 @@
 DAG 拓扑：
   START → dispatch_node → retrieve_or_generate_node → register_node → format_result_node → END
 
-保持对外接口兼容（function_id、WORKFLOWS 导出、output_llm_content 结构）。
+保持对外接口兼容（function_id、WORKFLOWS / WORKFLOW_COMMANDS 导出、
+output_llm_content 结构）。
 """
 
 from __future__ import annotations
@@ -804,8 +805,13 @@ WORKFLOWS: Dict[int, "CompiledStateGraph"] = {
     MODEL_RETRIEVAL_FUNCTION_ID: build_model_retrieval_workflow(),
 }
 
+WORKFLOW_COMMANDS: Dict[str, int] = {
+    "/model_retrieval": MODEL_RETRIEVAL_FUNCTION_ID,
+}
+
 __all__ = [
     "WORKFLOWS",
+    "WORKFLOW_COMMANDS",
     "MODEL_RETRIEVAL_FUNCTION_ID",
     "build_model_retrieval_workflow",
 ]

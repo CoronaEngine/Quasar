@@ -1,5 +1,5 @@
 """
-集成对话：多场景室内设计工作流（LangGraph DAG 重构版）
+第一步工作流：多物体场景设计（LangGraph DAG）
 
 将原单节点耦合流程拆分为 5 个独立节点的 DAG：
   analyzer_node → human_review_node
@@ -7,7 +7,8 @@
       → generate_layout_text_node ─┤→ aggregate_result_node → END
 
 支持：多模态输入、Human-in-the-loop 审核、并行图文生成。
-保持对外接口兼容（function_id、WORKFLOWS 导出、output_llm_content 结构）。
+保持对外接口兼容（function_id、WORKFLOWS / WORKFLOW_COMMANDS 导出、
+output_llm_content 结构）。
 """
 
 from __future__ import annotations
@@ -27,7 +28,12 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
 from ai_config.ai_config import get_ai_config
-from ai_models.base_pool import get_chat_model, get_pool_registry, MediaCategory, OmniRequest
+from ai_models.base_pool import (
+    get_chat_model,
+    get_pool_registry,
+    MediaCategory,
+    OmniRequest,
+)
 from ai_tools.registry import get_tool_registry
 from ai_workflow.state import WorkflowState
 from ai_tools.response_adapter import FILEID_SCHEME
@@ -38,9 +44,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MULTI_SCENE_FUNCTION_ID = 21001
+IMAGE_MAX_WORKERS = 5
 
 # ---------------------------------------------------------------------------
-# 工具 / 辅助函数（复用原有逻辑）
+# 工具获取
 # ---------------------------------------------------------------------------
 
 
@@ -52,6 +59,11 @@ def _get_generate_image_tool():
 
         load_tools(get_ai_config())
     return {t.name: t for t in registry.list_tools()}.get("generate_image")
+
+
+# ---------------------------------------------------------------------------
+# 辅助函数
+# ---------------------------------------------------------------------------
 
 
 def _extract_text(response: Any) -> str:
@@ -81,12 +93,14 @@ def _extract_image_url(raw_result: Any) -> str:
     if extracted.startswith(FILEID_SCHEME):
         from ai_media_resource import get_media_registry
 
-        file_id = extracted[len(FILEID_SCHEME):]
+        file_id = extracted[len(FILEID_SCHEME) :]
         try:
             # 阻塞等待异步任务完成，获取可访问 URL。
             return get_media_registry().resolve(file_id)
         except Exception as e:
-            logger.error(f"[Workflow][generate_images] file_id 解析失败: {file_id}, err={e}")
+            logger.error(
+                f"[Workflow][generate_images] file_id 解析失败: {file_id}, err={e}"
+            )
             return ""
 
     return extracted
@@ -218,9 +232,7 @@ _VLM_ANALYSIS_PROMPT = (
 )
 
 
-def _analyze_images_with_vlm(
-    images: List[str], session_id: str = ""
-) -> str:
+def _analyze_images_with_vlm(images: List[str], session_id: str = "") -> str:
     """通过项目 Omni 模块调用 VLM 对图片进行视觉分析。
 
     Returns:
@@ -230,7 +242,14 @@ def _analyze_images_with_vlm(
         from ai_media_resource import get_media_registry
 
         normalized_images: List[str] = []
-        src_stats = {"fileid": 0, "file": 0, "local": 0, "http": 0, "data": 0, "other": 0}
+        src_stats = {
+            "fileid": 0,
+            "file": 0,
+            "local": 0,
+            "http": 0,
+            "data": 0,
+            "other": 0,
+        }
 
         for raw in images:
             u = str(raw or "").strip()
@@ -244,7 +263,7 @@ def _analyze_images_with_vlm(
 
             if u.startswith(FILEID_SCHEME):
                 src_stats["fileid"] += 1
-                u = str(get_media_registry().resolve(u[len(FILEID_SCHEME):]))
+                u = str(get_media_registry().resolve(u[len(FILEID_SCHEME) :]))
 
             if u.startswith("file://"):
                 src_stats["file"] += 1
@@ -267,15 +286,21 @@ def _analyze_images_with_vlm(
                 with httpx.Client(timeout=30.0, follow_redirects=True) as c:
                     r = c.get(u)
                     r.raise_for_status()
-                    mime = r.headers.get("content-type", "").split(";")[0].strip().lower()
+                    mime = (
+                        r.headers.get("content-type", "").split(";")[0].strip().lower()
+                    )
                     if not mime.startswith("image/"):
-                        raise ValueError(f"VLM 输入不是图片: {u[:120]}, content-type={mime}")
+                        raise ValueError(
+                            f"VLM 输入不是图片: {u[:120]}, content-type={mime}"
+                        )
                     b64 = base64.b64encode(r.content).decode("utf-8")
                     normalized_images.append(f"data:{mime};base64,{b64}")
                 continue
 
             src_stats["other"] += 1
-            logger.warning(f"[Workflow][analyzer] 无法识别的图片输入，已跳过: {u[:160]}")
+            logger.warning(
+                f"[Workflow][analyzer] 无法识别的图片输入，已跳过: {u[:160]}"
+            )
 
         logger.info(
             "[Workflow][analyzer] image source stats: fileid=%s file=%s local=%s http=%s data=%s other=%s",
@@ -319,6 +344,7 @@ def analyzer_node(state: WorkflowState) -> Dict[str, Any]:
     VLM 不可用时降级为纯文本分析。
     """
     if state.get("error"):
+        logger.warning(f"[Workflow][analyzer] 上游错误，跳过: {state.get('error')}")
         return {}
 
     user_input = (state.get("prompt") or "").strip()
@@ -378,19 +404,23 @@ def analyzer_node(state: WorkflowState) -> Dict[str, Any]:
             )
 
         logger.info(f"[Workflow][analyzer] 提取到 {len(elements)} 个设计元素")
-        return {
+        result = {
             "is_multimodal": is_multimodal,
             "extracted_elements": elements,
         }
+        logger.debug(f"[Workflow][analyzer] 返回结果: {result}")
+        return result
 
     except json.JSONDecodeError as e:
         logger.warning(f"[Workflow][analyzer] JSON 解析失败，使用回退元素: {e}")
-        return {
+        result = {
             "is_multimodal": is_multimodal,
             "extracted_elements": list(_FALLBACK_ELEMENTS),
         }
+        logger.debug(f"[Workflow][analyzer] 返回回退结果: 3个默认元素")
+        return result
     except Exception as e:
-        logger.error(f"[Workflow][analyzer] 执行异常: {e}")
+        logger.error(f"[Workflow][analyzer] 执行异常: {e}", exc_info=True)
         return {"error": f"方案分析失败: {e}"}
 
 
@@ -408,6 +438,7 @@ def human_review_node(state: WorkflowState) -> Dict[str, Any]:
     并在 intermediate["human_review"] 中标记此回退点，便于后续接 UI 人审。
     """
     if state.get("error"):
+        logger.warning(f"[Workflow][human_review] 上游错误，跳过: {state.get('error')}")
         return {}
 
     extracted = state.get("extracted_elements", [])
@@ -464,6 +495,9 @@ def generate_images_node(state: WorkflowState) -> Dict[str, Any]:
     单项失败仅跳过该项并记录日志，不抛出致命异常。
     """
     if state.get("error"):
+        logger.warning(
+            f"[Workflow][generate_images] 上游错误，跳过: {state.get('error')}"
+        )
         return {}
 
     approved = state.get("approved_elements", [])
@@ -491,7 +525,7 @@ def generate_images_node(state: WorkflowState) -> Dict[str, Any]:
             logger.error(f"[Workflow][generate_images] {name} 生成失败: {e}")
             return name, ""
 
-    max_workers = min(len(approved), 5)
+    max_workers = min(len(approved), IMAGE_MAX_WORKERS)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(_generate_one, elem) for elem in approved]
         for future in concurrent.futures.as_completed(futures):
@@ -520,6 +554,9 @@ def generate_layout_text_node(state: WorkflowState) -> Dict[str, Any]:
     不调用 LLM，仅对已有的 item_name / layout_desc 做 Markdown 排版。
     """
     if state.get("error"):
+        logger.warning(
+            f"[Workflow][generate_layout_text] 上游错误，跳过: {state.get('error')}"
+        )
         return {}
 
     approved = state.get("approved_elements", [])
@@ -545,31 +582,96 @@ def generate_layout_text_node(state: WorkflowState) -> Dict[str, Any]:
 
 
 def aggregate_result_node(state: WorkflowState) -> Dict[str, Any]:
-    """汇总物品清单、布局描述与生成图片，输出 Markdown 格式的 output_llm_content。"""
+    """汇总物品清单、布局描述与生成图片，输出 Markdown 格式的 output_llm_content。
+
+    错误线程：若中间节点设置了 error，将其传回作为最终结果。
+    """
+    # --- 检查错误状态 ---
+    if state.get("error"):
+        error_msg = state.get("error", "工作流执行异常")
+        logger.error(f"[Workflow][aggregate] 流程中断，错误: {error_msg}")
+        output_content = _build_llm_content(
+            [f"❌ **设计方案生成失败**\n\n错误信息: {error_msg}"]
+        )
+        return {
+            "output_llm_content": output_content,
+            "intermediate": {
+                **state.get("intermediate", {}),
+                "workflow": "integrated_multi_scene",
+                "status": "failed",
+                "error": error_msg,
+            },
+        }
+
     generated_images: Dict[str, str] = state.get("generated_images", {})
     approved = state.get("approved_elements", [])
 
-    # 按物品逐项输出：名称 + 布局描述 + 图片
-    md_parts: List[str] = ["## 设计方案\n"]
+    # --- 检查空数据 ---
+    if not approved:
+        logger.warning("[Workflow][aggregate] 无设计元素可聚合")
+        output_content = _build_llm_content(
+            ["❌ **设计方案为空**\n\n未能提取到任何设计元素，请检查输入。"]
+        )
+        return {
+            "output_llm_content": output_content,
+            "intermediate": {
+                **state.get("intermediate", {}),
+                "workflow": "integrated_multi_scene",
+                "status": "empty",
+                "element_count": 0,
+                "image_success_count": 0,
+            },
+        }
+
+    # --- 正常聚合 ---
+    # 每个元素拆分为独立的 text part + image part，避免图片 URL 混入文本
+    parts: List[Dict[str, Any]] = [
+        {
+            "content_type": "text",
+            "content_text": "## 设计方案",
+            "content_url": "",
+            "parameter": {},
+        }
+    ]
 
     for idx, e in enumerate(approved, 1):
         name = e.get("item_name", "未命名")
         desc = e.get("layout_desc", "")
-        md_parts.append(f"### {idx}. {name}")
+
+        # 文本 part：标题 + 布局描述
+        text_lines = [f"### {idx}. {name}"]
         if desc:
-            md_parts.append(f"{desc}")
+            text_lines.append(desc)
+        parts.append({
+            "content_type": "text",
+            "content_text": "\n".join(text_lines),
+            "content_url": "",
+            "parameter": {},
+        })
+
+        # 图片 part：独立输出，不嵌入文本
         img_url = generated_images.get(name, "")
         if img_url:
-            md_parts.append(f"\n![{name}]({_to_display_url(img_url)})\n")
-        else:
-            md_parts.append("\n（图片生成失败）\n")
+            parts.append({
+                "content_type": "image",
+                "content_text": "",
+                "content_url": _to_display_url(img_url),
+                "parameter": {},
+            })
 
-    final_markdown = "\n".join(md_parts)
-    output_content = _build_llm_content([final_markdown])
+    output_content = [
+        {
+            "role": "assistant",
+            "interface_type": "integrated",
+            "sent_time_stamp": int(time.time()),
+            "part": parts,
+        }
+    ]
 
     intermediate = {
         **state.get("intermediate", {}),
         "workflow": "integrated_multi_scene",
+        "status": "success",
         "element_count": len(approved),
         "image_success_count": len(generated_images),
     }
@@ -627,4 +729,13 @@ WORKFLOWS: Dict[int, "CompiledStateGraph"] = {
     MULTI_SCENE_FUNCTION_ID: build_multi_scene_workflow(),
 }
 
-__all__ = ["WORKFLOWS", "MULTI_SCENE_FUNCTION_ID", "build_multi_scene_workflow"]
+WORKFLOW_COMMANDS: Dict[str, int] = {
+    "/multi_scene": MULTI_SCENE_FUNCTION_ID,
+}
+
+__all__ = [
+    "WORKFLOWS",
+    "WORKFLOW_COMMANDS",
+    "MULTI_SCENE_FUNCTION_ID",
+    "build_multi_scene_workflow",
+]
