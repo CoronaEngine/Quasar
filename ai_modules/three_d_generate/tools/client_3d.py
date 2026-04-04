@@ -389,19 +389,15 @@ class Rodin3DClient:
                 # ✅ 只在状态改变时才输出日志，避免大量重复日志
                 if statuses != last_statuses:
                     last_statuses = statuses
-                    if matched_jobs:
-                        logger.debug(
-                            "Rodin status task_uuid=%s matched_jobs=%s statuses=%s",
-                            task_uuid,
-                            len(matched_jobs),
-                            statuses,
-                        )
-                    elif st.get("jobs"):
-                        logger.warning(
-                            "Rodin status 未找到 task_uuid=%s 对应 job，回退到 subscription 级状态: %s",
-                            task_uuid,
-                            statuses,
-                        )
+                    # subscription_key 已天然隔离任务作用域，
+                    # 匹配不到 task 级 job 时使用全部 subscription jobs 是正常路径。
+                    logger.debug(
+                        "Rodin status task_uuid=%s matched_jobs=%s total_jobs=%s statuses=%s",
+                        task_uuid,
+                        len(matched_jobs),
+                        len(job_list),
+                        statuses,
+                    )
 
                 if any(s == "Failed" for s in statuses):
                     raise RuntimeError(
