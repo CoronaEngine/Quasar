@@ -197,6 +197,16 @@ def _handle_image_generation_inner(
         if not cleaned_parts:
             logger.error("图像生成未返回有效的图片部分")
             raise RuntimeError("图像生成未返回有效的图片部分")
+        
+        # 将原始 prompt 作为文本部分返回，以便前端展示
+        if prompt:
+            # 检查是否已有纯文本部分，避免重复
+            has_text = any(
+                p.get("content_type") == "text" and p.get("content_text") == prompt
+                for p in cleaned_parts
+            )
+            if not has_text:
+                cleaned_parts.insert(0, {"content_type": "text", "content_text": prompt})
 
         # 解析 parts 中的 fileid:// URL（返回真实 OSS URL 给用户）
         from ai_tools.response_adapter import (

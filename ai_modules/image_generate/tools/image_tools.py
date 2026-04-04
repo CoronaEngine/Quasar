@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import List
-import logging
+
 from langchain_core.tools import StructuredTool
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
@@ -66,7 +66,7 @@ def load_image_tools(config: AIConfig) -> List[StructuredTool]:
     pool_registry = get_pool_registry()
     if pool_registry.get_pool(MediaCategory.IMAGE) is None:
         # 既无账号池也无可用的旧客户端配置
-
+        import logging
 
         logging.getLogger(__name__).warning(
             "图像生成不可用：未配置账号池且旧客户端配置不完整。"
@@ -139,7 +139,6 @@ def load_image_tools(config: AIConfig) -> List[StructuredTool]:
                 session_id=session_id,
                 content_text=data.prompt,
             )
-            logging.getLogger(__name__).info("提交图像生成任务，file_id=%s", file_id)
 
             # 构建 part，使用 file_id（content_url 延迟解析）
             part = build_part(

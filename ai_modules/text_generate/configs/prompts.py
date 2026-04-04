@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Dict
 
-from ai_config.prompts import TextToolPromptConfig, TextToolPrompts,ToolPromptConfig
+from ai_config.prompts import TextToolPromptConfig, TextToolPrompts
 
 # ===========================================================================
 # 平台文案建议
@@ -112,38 +112,6 @@ TEXT_TOOL_PROMPTS = TextToolPrompts(
 )
 
 # ===========================================================================
-# 场景拆解提示词集合
-# ===========================================================================
-
-SCENE_PLAN_PROMPTS = ToolPromptConfig(
-    tool_description=(
-        "场景规划工具：输入一个场景类型（如卧室/客厅），输出："
-        "① 场景拆解文本（物体清单+空间分区+可选增补）。"
-        "本工具不生成参考图，不输出动线/布局逻辑。"
-    ),
-    fields={
-        "scene_type": "场景类型，例如：卧室、客厅、厨房、办公室等",
-        "style": "风格，例如：现代、北欧、日式、极简等",
-        "detail_level": "细节程度：简短/中等/详细",
-        "constraints": "可选：约束，例如：小户型、主卧、儿童房、带飘窗等",
-        # 注意：views/image_size/resolution 字段仍可保留兼容，但工具内部将不再使用它们
-        "views": "（兼容字段）参考视角列表（已不再使用）",
-        "image_size": "（兼容字段）生成图片尺寸等级（已不再使用）",
-        "resolution": "（兼容字段）画幅比例（已不再使用）",
-    },
-)
-
-SCENE_BREAKDOWN_PROMPTS = ToolPromptConfig(
-    tool_description="生成场景拆解：输出可读文本 + 结构化JSON（objects/zones/optional_additions）。不输出动线/布局逻辑，不生成图片。",
-    fields={
-        "scene_type": "场景类型，例如：办公室、卧室、客厅等",
-        "style": "风格，例如：现代、北欧、日式、极简等",
-        "detail_level": "细节程度：简短/中等/详细",
-        "constraints": "可选约束：小户型/主卧/带飘窗等",
-    },
-)
-
-# ===========================================================================
 # 导出
 # ===========================================================================
 
@@ -153,6 +121,4 @@ __all__ = [
     "CREATIVE_TEXT_PROMPTS",
     "TEXT_TOOL_PROMPTS",
     "PLATFORM_TIPS",
-    "SCENE_BREAKDOWN_PROMPTS",
-    "SCENE_PLAN_PROMPTS",
 ]

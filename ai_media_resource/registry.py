@@ -293,6 +293,7 @@ class MediaResourceRegistry:
     def resolve(
         self,
         file_id: str,
+        timeout: float | None = None,
         encode_to_base64: bool | None = None,
         return_original_url: bool = False,
     ) -> str:
@@ -303,6 +304,7 @@ class MediaResourceRegistry:
 
         参数:
         - file_id: 资源 ID
+        - timeout: 等待超时时间（秒），None 表示由 TaskExecutor 智能推断
         - encode_to_base64: 保留参数，暂未使用（base64 转换在上层处理）
         - return_original_url: 是否返回原始云端 URL（而非 base64）
           - False (默认): 返回 base64 data URI（安全，不泄露上游 URL）
@@ -336,8 +338,8 @@ class MediaResourceRegistry:
         if record.task_id:
             executor = get_task_executor()
             try:
-                # 不传递 timeout，让 executor.wait() 根据任务类型智能推断
-                result = executor.wait(record.task_id)
+                # timeout 为 None 时，由 executor.wait() 根据任务类型智能推断
+                result = executor.wait(record.task_id, timeout=timeout)
                 # 从结果中提取 URL
                 # 兼容不同路径导入造成的 StorageResult 类型不一致 (Duck Typing)
                 if hasattr(result, "url") and hasattr(result, "url_expire_time"):
