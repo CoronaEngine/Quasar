@@ -106,6 +106,21 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     )
 
     # -----------------------------------------------------------------------
+    # 摄像头操作工具（MCP）
+    # -----------------------------------------------------------------------
+
+    from ai_modules.mcp.tools.camera_tools import load_camera_tools
+    registry.register_loader(
+        loader=load_camera_tools,
+        category=ToolCategory.SCENE,
+        dependencies=[
+            ToolDependency(DependencyType.SCENE_SERVICE, required=True),
+        ],
+        requires_config=False,
+        source="tools.mcp.camera",
+    )
+
+    # -----------------------------------------------------------------------
     # 图像生成工具
     # -----------------------------------------------------------------------
     from ai_modules.image_generate.tools.image_tools import load_image_tools
