@@ -98,9 +98,7 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     registry.register_loader(
         loader=load_scene_tools,
         category=ToolCategory.SCENE,
-        dependencies=[
-            ToolDependency(DependencyType.SCENE_SERVICE, required=True),
-        ],
+        dependencies=[],
         requires_config=False,
         source="tools.mcp",
     )
@@ -113,9 +111,7 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     registry.register_loader(
         loader=load_camera_tools,
         category=ToolCategory.SCENE,
-        dependencies=[
-            ToolDependency(DependencyType.SCENE_SERVICE, required=True),
-        ],
+        dependencies=[],
         requires_config=False,
         source="tools.mcp.camera",
     )

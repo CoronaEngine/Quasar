@@ -29,12 +29,15 @@ SCENE_QUERY_PROMPTS = ToolPromptConfig(
 # ===========================================================================
 
 SCENE_TRANSFORM_PROMPTS = ToolPromptConfig(
-    tool_description="对模型执行缩放/移动/旋转等操作。默认操作为放大或缩小。",
+    tool_description=(
+        "对模型执行缩放/移动/旋转等操作。默认操作为放大或缩小。"
+        "坐标系：X正为右，Y正为上，Z正为朝屏幕里侧（左手坐标系）。"
+    ),
     fields={
         "model_name": "需要变换的模型名称",
         "transform_type": "变换类型",
         "value": "变换值",
-        "axis": "变换轴",
+        "axis": "变换轴 (x,y,z)。坐标系：X正为右，Y正为上，Z正为朝屏幕里侧",
         "relative": "是否相对变换",
     },
 )

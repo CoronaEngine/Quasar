@@ -155,7 +155,10 @@ def _build_camera_move_tool(scene_manager) -> StructuredTool:
 
     return StructuredTool(
         name="camera_move",
-        description="移动摄像头到指定位置和朝向。需要提供位置坐标 (x,y,z)、朝向 (x,y,z)，可选上方向和视野角度。",
+        description=(
+            "移动摄像头到指定位置和朝向。需要提供位置坐标 (x,y,z)、朝向 (x,y,z)，可选上方向和视野角度。"
+            "坐标系：X正为右，Y正为上，Z正为朝屏幕里侧（左手坐标系）。"
+        ),
         args_schema=CameraMoveInput,
         func=_camera_move,
     )
@@ -203,7 +206,10 @@ def _build_camera_get_tool(scene_manager) -> StructuredTool:
 
     return StructuredTool(
         name="camera_get",
-        description="获取摄像头当前状态，包括位置、朝向、上方向和视野角度。",
+        description=(
+            "获取摄像头当前状态，包括位置、朝向、上方向和视野角度。"
+            "坐标系：X正为右，Y正为上，Z正为朝屏幕里侧（左手坐标系）。"
+        ),
         args_schema=CameraGetInput,
         func=_camera_get,
     )
@@ -242,31 +248,37 @@ def _build_camera_focus_tool(scene_manager) -> StructuredTool:
                     error_message=f"Actor '{actor_name}' has no geometry"
                 ).to_envelope(interface_type="scene")
 
-            aabb = actor._geometry.get_aabb()
-            center = [
+            aabb = actor._geometry.get_aabb()  # 模型空间
+
+            # 获取 Actor 世界变换
+            actor_pos = actor.get_position()
+            actor_scale = actor.get_scale()
+
+            # 将模型空间 AABB 中心转换到世界空间
+            model_center = [
                 (aabb[0] + aabb[3]) / 2.0,
                 (aabb[1] + aabb[4]) / 2.0,
                 (aabb[2] + aabb[5]) / 2.0,
             ]
-            dx = aabb[3] - aabb[0]
-            dy = aabb[4] - aabb[1]
-            dz = aabb[5] - aabb[2]
+            center = [
+                actor_pos[0] + model_center[0] * actor_scale[0],
+                actor_pos[1] + model_center[1] * actor_scale[1],
+                actor_pos[2] + model_center[2] * actor_scale[2],
+            ]
+            dx = (aabb[3] - aabb[0]) * actor_scale[0]
+            dy = (aabb[4] - aabb[1]) * actor_scale[1]
+            dz = (aabb[5] - aabb[2]) * actor_scale[2]
             diagonal = math.sqrt(dx * dx + dy * dy + dz * dz)
             distance = max(diagonal * 2.0, 1.0)
 
-            cur_fwd = camera.get_forward()
-            fwd_len = math.sqrt(sum(f * f for f in cur_fwd))
-            if fwd_len < 1e-6:
-                cur_fwd = [0.0, 0.0, -1.0]
-                fwd_len = 1.0
-            forward = [f / fwd_len for f in cur_fwd]
-
+            # 摄像头放在物体中心的 -Z 方向，朝向 +Z（看向物体中心）
+            forward = [0.0, 0.0, 1.0]
             position = [
-                center[0] - forward[0] * distance,
-                center[1] - forward[1] * distance,
-                center[2] - forward[2] * distance,
+                center[0],
+                center[1],
+                center[2] - distance,
             ]
-            up = camera.get_world_up()
+            up = [0.0, 1.0, 0.0]
             fov = camera.get_fov()
             camera.set(position, forward, up, fov)
 
@@ -470,16 +482,24 @@ def _build_camera_multiview_tool(scene_manager) -> StructuredTool:
                     error_message=f"Actor '{actor_name}' has no geometry"
                 ).to_envelope(interface_type="scene")
 
-            # 计算目标物体中心和观察距离
-            aabb = actor._geometry.get_aabb()
-            center = [
+            # 计算目标物体中心和观察距离（模型空间 → 世界空间）
+            aabb = actor._geometry.get_aabb()  # 模型空间
+            actor_pos = actor.get_position()
+            actor_scale = actor.get_scale()
+
+            model_center = [
                 (aabb[0] + aabb[3]) / 2.0,
                 (aabb[1] + aabb[4]) / 2.0,
                 (aabb[2] + aabb[5]) / 2.0,
             ]
-            dx = aabb[3] - aabb[0]
-            dy = aabb[4] - aabb[1]
-            dz = aabb[5] - aabb[2]
+            center = [
+                actor_pos[0] + model_center[0] * actor_scale[0],
+                actor_pos[1] + model_center[1] * actor_scale[1],
+                actor_pos[2] + model_center[2] * actor_scale[2],
+            ]
+            dx = (aabb[3] - aabb[0]) * actor_scale[0]
+            dy = (aabb[4] - aabb[1]) * actor_scale[1]
+            dz = (aabb[5] - aabb[2]) * actor_scale[2]
             diagonal = math.sqrt(dx * dx + dy * dy + dz * dz)
             distance = max(diagonal * 2.0, 1.0)
 

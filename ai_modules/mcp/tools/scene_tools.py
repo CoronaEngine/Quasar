@@ -18,9 +18,6 @@ from ai_tools.response_adapter import (
 )
 DEFAULT_SCENE_NAME = ""
 
-if TYPE_CHECKING:
-    from Backend.utils import SceneApplicationService
-
 
 def _resolve_scene(scene_manager, scene_name: str):
     """根据名称获取场景，若为空则自动获取当前已加载的场景。"""
@@ -73,7 +70,12 @@ class SceneActorsInput(BaseModel):
     )
 
 
-def _build_scene_query_tool(scene_service) -> StructuredTool:
+class SceneListInput(BaseModel):
+    """列出所有已加载场景，无需参数"""
+    pass
+
+
+def _build_scene_query_tool(scene_manager) -> StructuredTool:
     def _query_scene(
         *,
         scene_name: str = DEFAULT_SCENE_NAME,
@@ -82,7 +84,7 @@ def _build_scene_query_tool(scene_service) -> StructuredTool:
     ) -> str:
         try:
             data = SceneQueryInput(scene_name=scene_name, query=query, name=name)
-            scene = scene_service.get_scene(data.scene_name)
+            scene = _resolve_scene(scene_manager, data.scene_name)
 
             result_data = {}
             if scene is None:
@@ -91,7 +93,7 @@ def _build_scene_query_tool(scene_service) -> StructuredTool:
                 actors = [actor.name for actor in scene.get_actors()]
                 result_data = {"scene": data.scene_name, "actors": actors}
             elif data.query == "get_model_by_name":
-                actor = scene_service._find_actor(scene, data.name or "")
+                actor = scene.find_actor(data.name or "")
                 if actor is None:
                     result_data = {
                         "scene": data.scene_name,
@@ -102,7 +104,7 @@ def _build_scene_query_tool(scene_service) -> StructuredTool:
                     result_data = {
                         "scene": data.scene_name,
                         "actor": actor.name,
-                        "path": actor.path,
+                        "model_path": getattr(actor, "model_path", ""),
                         "found": True,
                     }
             else:
@@ -110,13 +112,10 @@ def _build_scene_query_tool(scene_service) -> StructuredTool:
                     error_message=f"Unsupported query type: {data.query}"
                 ).to_envelope(interface_type="scene")
 
-            # 构建 part
             part = build_part(
                 content_type="text",
                 content_text=json.dumps(result_data, ensure_ascii=False),
             )
-
-            # 返回成功结果
             return build_success_result(parts=[part]).to_envelope(
                 interface_type="scene"
             )
@@ -133,7 +132,7 @@ def _build_scene_query_tool(scene_service) -> StructuredTool:
     )
 
 
-def _build_transform_tool(scene_service) -> StructuredTool:
+def _build_transform_tool(scene_manager) -> StructuredTool:
     def _transform_model(
         *,
         scene_name: str = DEFAULT_SCENE_NAME,
@@ -150,41 +149,51 @@ def _build_transform_tool(scene_service) -> StructuredTool:
                 scale_factor=scale_factor,
                 vector=vector,
             )
+            scene = _resolve_scene(scene_manager, data.scene_name)
+            if scene is None:
+                return build_error_result(
+                    error_message="No scene loaded"
+                ).to_envelope(interface_type="scene")
+
+            actor = scene.find_actor(data.model_name)
+            if actor is None:
+                return build_error_result(
+                    error_message=f"Actor '{data.model_name}' not found"
+                ).to_envelope(interface_type="scene")
+
             op = data.operation.lower()
             if op == "scale":
                 if data.scale_factor is not None:
-                    vector = [data.scale_factor] * 3
+                    v = [data.scale_factor] * 3
                 elif data.vector is not None:
-                    vector = list(data.vector)
+                    v = list(data.vector)
                 else:
                     raise ValueError("scale 操作需要提供 scale_factor 或 vector")
-                payload = scene_service.apply_transform(
-                    data.scene_name, data.model_name, "Scale", vector
-                )
+                actor.set_scale(v)
             elif op == "move":
                 if data.vector is None:
                     raise ValueError("move 操作需要提供 vector")
-                payload = scene_service.apply_transform(
-                    data.scene_name, data.model_name, "Move", list(data.vector)
-                )
+                actor.move(list(data.vector))
             elif op == "rotate":
                 if data.vector is None:
                     raise ValueError("rotate 操作需要提供 vector")
-                payload = scene_service.apply_transform(
-                    data.scene_name, data.model_name, "Rotate", list(data.vector)
-                )
+                actor.rotate(list(data.vector))
             else:
                 return build_error_result(
                     error_message=f"Unsupported operation '{data.operation}'"
                 ).to_envelope(interface_type="scene")
 
-            # 构建 part
+            payload = {
+                "actor": actor.name,
+                "operation": op,
+                "position": list(actor.get_position()),
+                "rotation": list(actor.get_rotation()),
+                "scale": list(actor.get_scale()),
+            }
             part = build_part(
                 content_type="text",
                 content_text=json.dumps(payload, ensure_ascii=False),
             )
-
-            # 返回成功结果
             return build_success_result(parts=[part]).to_envelope(
                 interface_type="scene"
             )
@@ -309,19 +318,66 @@ def _build_scene_actors_tool(scene_manager) -> StructuredTool:
         description=(
             "获取场景中的物体信息。不传 actor_name 时列出场景中所有物体及其位置；"
             "传入 actor_name 时返回该物体的详细信息，包括位置、旋转、缩放、包围盒、物理属性等。"
+            "坐标系：X正为右，Y正为上，Z正为朝屏幕里侧（左手坐标系）。"
         ),
         args_schema=SceneActorsInput,
         func=_scene_actors,
     )
 
 
+def _build_scene_list_tool(scene_manager) -> StructuredTool:
+    """构建列出所有已加载场景的工具"""
+
+    def _scene_list() -> str:
+        try:
+            routes = scene_manager.list_all()
+            scenes_info = []
+            for route in routes:
+                scene = scene_manager.get(route)
+                entry = {"route": route}
+                if scene is not None:
+                    entry["name"] = getattr(scene, "name", route)
+                    try:
+                        entry["actor_count"] = len(scene.get_actors())
+                    except Exception:
+                        pass
+                    try:
+                        entry["camera_count"] = len(scene.get_cameras())
+                    except Exception:
+                        pass
+                scenes_info.append(entry)
+
+            result_data = {
+                "count": len(scenes_info),
+                "scenes": scenes_info,
+            }
+            part = build_part(
+                content_type="text",
+                content_text=json.dumps(result_data, ensure_ascii=False),
+            )
+            return build_success_result(parts=[part]).to_envelope(
+                interface_type="scene"
+            )
+        except Exception as e:
+            return build_error_result(error_message=str(e)).to_envelope(
+                interface_type="scene"
+            )
+
+    return StructuredTool(
+        name="scene_list",
+        description="列出所有已加载的场景，返回每个场景的路由名称、显示名称、物体数量和摄像头数量。",
+        args_schema=SceneListInput,
+        func=_scene_list,
+    )
+
+
 def load_scene_tools() -> List[StructuredTool]:
-    from Backend.utils import scene_service
     from CoronaCore.core.managers import scene_manager
     return [
-        _build_scene_query_tool(scene_service),
-        _build_transform_tool(scene_service),
+        _build_scene_list_tool(scene_manager),
         _build_scene_actors_tool(scene_manager),
+        _build_scene_query_tool(scene_manager),
+        _build_transform_tool(scene_manager),
     ]
 
 
