@@ -76,7 +76,7 @@ def parse_request(request_data: Any) -> WorkflowState:
     resolution = extract_parameter(data, "resolution", "1:1")
     image_size = _normalize_image_size(extract_parameter(data, "image_size", "2K"))
 
-    return create_initial_state(
+    state = create_initial_state(
         session_id=session_id,
         function_id=function_id,
         prompt=prompt,
@@ -87,6 +87,22 @@ def parse_request(request_data: Any) -> WorkflowState:
         image_size=image_size,
         metadata=metadata,
     )
+
+    # 审核提交后的续跑字段（用于跳过 analyzer/human_review）
+    resume_from_review = bool(extract_parameter(data, "resume_from_review", False))
+    resume_batch_id = extract_parameter(data, "resume_batch_id", "")
+    resume_items = extract_parameter(data, "resume_approved_elements", None)
+
+    if resume_from_review and isinstance(resume_items, list):
+        state["approved_elements"] = resume_items
+        state["extracted_elements"] = resume_items
+        state["metadata"] = {
+            **state.get("metadata", {}),
+            "resume_from_review": True,
+            "resume_batch_id": resume_batch_id,
+        }
+
+    return state
 
 
 def _extract_prompt(data: Dict[str, Any]) -> str:

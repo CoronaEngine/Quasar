@@ -35,11 +35,14 @@ from ai_models.base_pool import (
     OmniRequest,
 )
 from ai_tools.registry import get_tool_registry
+from ai_workflow.executor import register_workflow_checkpoints
 from ai_workflow.state import WorkflowState
 from ai_tools.response_adapter import FILEID_SCHEME
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
+
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +96,7 @@ def _extract_image_url(raw_result: Any) -> str:
     if extracted.startswith(FILEID_SCHEME):
         from ai_media_resource import get_media_registry
 
-        file_id = extracted[len(FILEID_SCHEME) :]
+        file_id = extracted[len(FILEID_SCHEME):]
         try:
             # 阻塞等待异步任务完成，获取可访问 URL。
             return get_media_registry().resolve(file_id)
@@ -263,7 +266,7 @@ def _analyze_images_with_vlm(images: List[str], session_id: str = "") -> str:
 
             if u.startswith(FILEID_SCHEME):
                 src_stats["fileid"] += 1
-                u = str(get_media_registry().resolve(u[len(FILEID_SCHEME) :]))
+                u = str(get_media_registry().resolve(u[len(FILEID_SCHEME):]))
 
             if u.startswith("file://"):
                 src_stats["file"] += 1
@@ -347,6 +350,21 @@ def analyzer_node(state: WorkflowState) -> Dict[str, Any]:
         logger.warning(f"[Workflow][analyzer] 上游错误，跳过: {state.get('error')}")
         return {}
 
+    # 审核提交后的续跑：直接复用已确认元素，跳过 analyzer。
+    if state.get("metadata", {}).get("resume_from_review"):
+        resumed_elements = state.get("approved_elements", []) or state.get(
+            "extracted_elements", []
+        )
+        if resumed_elements:
+            logger.info(
+                "[Workflow][analyzer] 检测到 review resume，跳过分析，元素数=%s",
+                len(resumed_elements),
+            )
+            return {
+                "is_multimodal": bool(state.get("images")),
+                "extracted_elements": resumed_elements,
+            }
+
     user_input = (state.get("prompt") or "").strip()
     if not user_input:
         return {"error": "缺少设计需求文本"}
@@ -417,7 +435,7 @@ def analyzer_node(state: WorkflowState) -> Dict[str, Any]:
             "is_multimodal": is_multimodal,
             "extracted_elements": list(_FALLBACK_ELEMENTS),
         }
-        logger.debug(f"[Workflow][analyzer] 返回回退结果: 3个默认元素")
+        logger.debug("[Workflow][analyzer] 返回回退结果: 3个默认元素")
         return result
     except Exception as e:
         logger.error(f"[Workflow][analyzer] 执行异常: {e}", exc_info=True)
@@ -429,29 +447,89 @@ def analyzer_node(state: WorkflowState) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _build_review_output(
+    elements: List[Dict[str, str]],
+    batch_id: str | None = None,
+) -> List[Dict[str, Any]]:
+    """构造 output_llm_content，包含 content_type='review' 的审核 part。"""
+    bid = batch_id or str(uuid.uuid4())
+    review_part = {
+        "content_type": "review",
+        "content_text": "请确认以下设计方案，可编辑后提交。",
+        "content_url": "",
+        "parameter": {
+            "review": {
+                "stage": "pending",
+                "batch_id": bid,
+                "schema_version": 1,
+                "items": elements,
+            }
+        },
+    }
+    return [
+        {
+            "role": "assistant",
+            "interface_type": "integrated",
+            "sent_time_stamp": int(time.time()),
+            "part": [review_part],
+        }
+    ]
+
+
 def human_review_node(state: WorkflowState) -> Dict[str, Any]:
     """Human-in-the-loop 审核节点。
 
-    优先使用 LangGraph ``interrupt`` 暂停图执行，将待审核元素返回给调用方。
-    调用方 resume 时传入审核后的元素列表。
-    若运行环境不支持 interrupt（无 checkpointer / 非交互调用），回退为自动通过，
-    并在 intermediate["human_review"] 中标记此回退点，便于后续接 UI 人审。
+    通过 output_llm_content 输出 content_type='review' 的审核块，
+    checkpoint 流式机制会将其 yield 给前端。前端展示审核 UI 后提交
+    修改后的 items，workflow_bridge 负责回填 approved_elements 并
+    恢复工作流。
+
+    注意：这里明确关闭“自动通过”回退逻辑。
+    - 支持 interrupt 的环境：等待人工审核结果后继续。
+    - 不支持 interrupt 的环境：仅下发待审核内容并标记 awaiting_review。
     """
     if state.get("error"):
         logger.warning(f"[Workflow][human_review] 上游错误，跳过: {state.get('error')}")
         return {}
 
+    # 审核提交后的续跑：直接使用已确认元素，不再次触发审核。
+    if state.get("metadata", {}).get("resume_from_review"):
+        resumed_approved = state.get("approved_elements", [])
+        if resumed_approved:
+            logger.info(
+                "[Workflow][human_review] 检测到 review resume，直接通过已确认元素，数量=%s",
+                len(resumed_approved),
+            )
+            return {
+                "approved_elements": resumed_approved,
+                "intermediate": {
+                    **state.get("intermediate", {}),
+                    "human_review": {
+                        "status": "resumed",
+                        "batch_id": state.get("metadata", {}).get(
+                            "resume_batch_id", ""
+                        ),
+                        "elements": resumed_approved,
+                        "note": "已接收前端审核结果，继续执行后续节点。",
+                    },
+                },
+            }
+
     extracted = state.get("extracted_elements", [])
     if not extracted:
         return {"error": "无可审核的设计元素"}
 
-    # --- 尝试 LangGraph interrupt（真正的 HITL）---
+    batch_id = str(uuid.uuid4())
+    review_content = _build_review_output(extracted, batch_id)
+
+    # --- 优先走 LangGraph interrupt（真正的 HITL）---
     try:
         from langgraph.types import interrupt  # type: ignore[import-untyped]
 
         review_payload = {
             "action": "review_elements",
             "elements": extracted,
+            "batch_id": batch_id,
             "message": "请审核以下设计元素，可修改后返回，或原样返回表示通过。",
         }
         approved = interrupt(review_payload)
@@ -460,24 +538,37 @@ def human_review_node(state: WorkflowState) -> Dict[str, Any]:
             logger.info(
                 f"[Workflow][human_review] 人工审核通过，{len(approved)} 个元素"
             )
-            return {"approved_elements": approved}
+            return {
+                "approved_elements": approved,
+                "output_llm_content": review_content,
+                "intermediate": {
+                    **state.get("intermediate", {}),
+                    "human_review": {
+                        "status": "approved",
+                        "batch_id": batch_id,
+                        "elements": approved,
+                        "note": "审核完成，继续执行后续节点。",
+                    },
+                },
+            }
     except Exception as exc:
         logger.info(
-            f"[Workflow][human_review] interrupt 不可用或被跳过 ({exc})，自动通过"
+            f"[Workflow][human_review] interrupt 不可用或未接入 resume ({exc})，改为等待前端审核提交"
         )
 
-    # --- 回退：自动通过 ---
     logger.info(
-        f"[Workflow][human_review] 自动通过 {len(extracted)} 个元素（回退模式）"
+        f"[Workflow][human_review] 已发送待审核内容，元素数量: {len(extracted)}, batch_id={batch_id}"
     )
     return {
-        "approved_elements": extracted,
+        "output_llm_content": review_content,
+        "awaiting_review": True,
         "intermediate": {
             **state.get("intermediate", {}),
             "human_review": {
-                "status": "auto_approved",
+                "status": "pending",
+                "batch_id": batch_id,
                 "elements": extracted,
-                "note": "当前为自动通过回退，后续可接入 UI 实现真正的人机审核。",
+                "note": "审核请求已下发，等待前端提交确认结果。",
             },
         },
     }
@@ -498,6 +589,10 @@ def generate_images_node(state: WorkflowState) -> Dict[str, Any]:
         logger.warning(
             f"[Workflow][generate_images] 上游错误，跳过: {state.get('error')}"
         )
+        return {}
+
+    if state.get("awaiting_review"):
+        logger.info("[Workflow][generate_images] 等待审核提交，暂不执行图片生成")
         return {}
 
     approved = state.get("approved_elements", [])
@@ -551,7 +646,7 @@ def generate_images_node(state: WorkflowState) -> Dict[str, Any]:
 def generate_layout_text_node(state: WorkflowState) -> Dict[str, Any]:
     """将审核通过的元素格式化为物品清单与布局描述文本。
 
-    不调用 LLM，仅对已有的 item_name / layout_desc 做 Markdown 排版。
+    不调用 LLM，仅对已有的 item_name / layout_desc 做格式化。
     """
     if state.get("error"):
         logger.warning(
@@ -559,20 +654,24 @@ def generate_layout_text_node(state: WorkflowState) -> Dict[str, Any]:
         )
         return {}
 
+    if state.get("awaiting_review"):
+        logger.info("[Workflow][generate_layout_text] 等待审核提交，暂不执行文案生成")
+        return {}
+
     approved = state.get("approved_elements", [])
     if not approved:
         return {"layout_text": "暂无设计元素。"}
 
-    lines: List[str] = ["## 设计方案\n"]
+    lines: List[str] = ["设计方案"]
     for idx, e in enumerate(approved, 1):
         name = e.get("item_name", "未命名")
         desc = e.get("layout_desc", "")
-        lines.append(f"### {idx}. {name}")
+        lines.append(f"{idx}. {name}")
         if desc:
-            lines.append(f"{desc}\n")
+            lines.append(f"   {desc}")
 
     layout_text = "\n".join(lines)
-    logger.info("[Workflow][generate_layout_text] 排版完成")
+    logger.info("[Workflow][generate_layout_text] 格式化完成")
     return {"layout_text": layout_text}
 
 
@@ -601,6 +700,16 @@ def aggregate_result_node(state: WorkflowState) -> Dict[str, Any]:
                 "status": "failed",
                 "error": error_msg,
             },
+        }
+
+    if state.get("awaiting_review"):
+        logger.info("[Workflow][aggregate] 等待审核提交，暂不输出聚合结果")
+        return {
+            "intermediate": {
+                **state.get("intermediate", {}),
+                "workflow": "integrated_multi_scene",
+                "status": "pending_review",
+            }
         }
 
     generated_images: Dict[str, str] = state.get("generated_images", {})
@@ -732,6 +841,11 @@ WORKFLOWS: Dict[int, "CompiledStateGraph"] = {
 WORKFLOW_COMMANDS: Dict[str, int] = {
     "/multi_scene": MULTI_SCENE_FUNCTION_ID,
 }
+
+register_workflow_checkpoints(
+    MULTI_SCENE_FUNCTION_ID,
+    {"human_review", "aggregate_result"},
+)
 
 __all__ = [
     "WORKFLOWS",

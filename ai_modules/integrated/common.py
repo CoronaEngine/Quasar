@@ -103,7 +103,7 @@ def parse_tool_parts(content: str) -> List[Dict[str, Any]]:
                         for part in parts:
                             if isinstance(part, dict):
                                 content_type = part.get("content_type")
-                                if content_type in ["image", "audio", "video", "text", "file"]:
+                                if content_type in ["image", "audio", "video", "text", "file", "review"]:
                                     found_parts.append(part)
     except ToolError:
         raise
