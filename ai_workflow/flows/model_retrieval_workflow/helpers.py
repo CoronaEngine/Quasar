@@ -38,6 +38,7 @@ def get_tool(name: str) -> Any:
 
 def get_search_tool():
     """获取物体搜索工具。"""
+    return None  # TEMP: 临时屏蔽嵌入模型，跳过检索阶段
     return get_tool("search_similar_object")
 
 
@@ -190,6 +191,7 @@ def build_placeholder_embedding(
 
 def get_embedding_client():
     """获取 Qwen3-VL-Embedding 客户端单例，按需从配置初始化。"""
+    return None  # TEMP: 临时屏蔽嵌入模型，注册阶段将降级为占位向量
     from ai_modules.object_recognition.configs.dataclasses import (
         EmbeddingModelConfig,
         RecognitionConfig,

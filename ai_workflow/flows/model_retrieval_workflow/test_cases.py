@@ -22,8 +22,16 @@ TEST_CASE_DATA: Dict[str, Dict[str, Any]] = {
                     },
                 ],
                 "generated_images": {
-                    "现代沙发": "file://test_sofa.jpg",
-                    "艺术落地灯": "file://test_lamp.jpg",
+                    "现代沙发": (
+                        "D:\\CodeLib\\storage_root\\media_storage\\"
+                        "resource_4dafc270e3e44c7ea514215b406b80ab_"
+                        "c4efd90a-31a1-11f1-b3e9-68ecc582fadb.png"
+                    ),
+                    "艺术落地灯": (
+                        "D:\\CodeLib\\storage_root\\media_storage\\"
+                        "resource_4dafc270e3e44c7ea514215b406b80ab_"
+                        "c032ee4b-31a1-11f1-bbb2-68ecc582fadb.png"
+                    ),
                 },
             }
         },
@@ -90,3 +98,7 @@ def get_test_case(test_case_key: str) -> Dict[str, Any]:
         list(case_data.keys()),
     )
     return dict(case_data)
+
+
+# 导出兼容接口
+TEST_CASES = TEST_CASE_DATA

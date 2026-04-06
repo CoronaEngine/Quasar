@@ -28,6 +28,11 @@ from .format_result import format_result_node
 from .register import register_node
 from .retrieve_or_generate import retrieve_or_generate_node
 
+try:
+    from .test_cases import TEST_CASES
+except ImportError:
+    TEST_CASES = {}
+
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
 
@@ -68,4 +73,5 @@ __all__ = [
     "WORKFLOW_COMMANDS",
     "MODEL_RETRIEVAL_FUNCTION_ID",
     "build_model_retrieval_workflow",
+    "TEST_CASES",
 ]

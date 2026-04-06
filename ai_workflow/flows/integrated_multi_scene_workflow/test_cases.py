@@ -55,3 +55,7 @@ def get_test_case(test_case_key: str) -> Dict[str, Any]:
         list(case_data.keys()),
     )
     return dict(case_data)
+
+
+# 导出兼容接口
+TEST_CASES = TEST_CASE_DATA
