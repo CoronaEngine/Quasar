@@ -13,30 +13,8 @@ from ai_tools.concurrency import session_concurrency
 from ai_tools.helpers import request_time_diff
 
 from .stream_handler import handle_integrated_entrance_stream_inner
-from .sync_handler import handle_integrated_entrance_inner
 
 logger = logging.getLogger(__name__)
-
-
-@register_entrance(handler_name="handle_integrated_entrance")
-def handle_integrated_entrance(payload: Any) -> str:
-    """统一聊天接口：一轮 QA 的所有输出合并到同一个 entry。"""
-    request_time_diff(payload)
-    request_data: Dict[str, Any] = ensure_dict(payload)
-    metadata = request_data.get("metadata", {})
-    session_id = request_data.get("session_id", "default")
-    cfg = get_ai_config()
-
-    # 使用统一的并发控制
-    with session_concurrency(session_id, cfg) as acquired:
-        if not acquired:
-            return build_error_response(
-                interface_type="integrated",
-                session_id=session_id,
-                metadata=metadata,
-                exc=RuntimeError("并发繁忙，请稍后重试"),
-            )
-        return handle_integrated_entrance_inner(request_data, session_id, metadata)
 
 
 @register_entrance(handler_name="handle_integrated_entrance_stream")
@@ -69,4 +47,4 @@ def handle_integrated_entrance_stream(payload: Any):
         )
 
 
-__all__ = ["handle_integrated_entrance", "handle_integrated_entrance_stream"]
+__all__ = ["handle_integrated_entrance_stream"]

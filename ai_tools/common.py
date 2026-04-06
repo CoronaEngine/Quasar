@@ -149,15 +149,27 @@ def extract_parameter(
     """从 request_data 或 llm_content 中提取参数。
 
     优先级：
-    1. request_data 顶层字段
-    2. llm_content[0]["part"][...]["parameter"] 中的字段 (标准格式)
+    1. llm_content 中最后一条 role=user 消息的 part[...]["parameter"] 字段
+    2. 兜底：llm_content[0] 的 part[...]["parameter"] 字段
     """
 
     llm_content = request_data.get("llm_content")
     if isinstance(llm_content, list) and llm_content:
-        first = llm_content[0]
+        # 从后往前找最后一条 user 消息（与 extract_user_parts 保持一致）
+        for entry in reversed(llm_content):
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("role") == "user":
+                parts = entry.get("part", [])
+                if isinstance(parts, list):
+                    for part in parts:
+                        part_params = part.get("parameter", {})
+                        if isinstance(part_params, dict) and param_name in part_params:
+                            return part_params[param_name]
+                break  # 找到了 user 条目但参数不在其中，不继续往前找旧消息
 
-        # 2. Try llm_content[0]["part"][...]["parameter"]
+        # 兜底：直接取 llm_content[0]（llm_content 无 role 字段时）
+        first = llm_content[0]
         parts = first.get("part", [])
         if isinstance(parts, list):
             for part in parts:

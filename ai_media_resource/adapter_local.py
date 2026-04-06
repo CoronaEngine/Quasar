@@ -34,8 +34,19 @@ class LocalStorageAdapter(StorageAdapter):
     """
 
     def __init__(self):
-        self.save_path = Path(__file__).parent.parent / "local_storage"
-        self.save_path.mkdir(exist_ok=True)
+        self.save_path = self._resolve_save_path()
+        self.save_path.mkdir(parents=True, exist_ok=True)
+
+    def _resolve_save_path(self) -> Path:
+        """解析本地存储路径：优先使用 paths_config 中的配置，未配置时自动推算"""
+        try:
+            from config.app_config import get_app_config
+            configured = get_app_config().paths.media_local_storage
+            if configured is not None:
+                return Path(configured)
+        except Exception:
+            pass
+        return Path(__file__).parent.parent / "local_storage"
 
     def save_from_url(
         self,

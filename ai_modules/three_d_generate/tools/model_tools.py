@@ -26,6 +26,53 @@ import urllib.parse
 
 _WIN_INVALID = r'[<>:"/\\|?*\x00-\x1F]'
 
+# ---------------------------------------------------------------------------
+# Mesh 下载完成 Event 注册表
+# ---------------------------------------------------------------------------
+# 后台线程下载 mesh 时，工作流可通过 wait_for_mesh_ready() 阻塞等待。
+# Event 在 bg_thread.start() 前注册，在 _download_rest_files_async 的
+# finally 中 set，保证无竞争窗口且不会永久阻塞。
+
+_MESH_READY_EVENTS: Dict[str, threading.Event] = {}
+_MESH_EVENTS_LOCK = threading.Lock()
+
+
+def _register_mesh_event(object_id: str) -> None:
+    """为指定 object_id 创建 mesh 下载完成 Event（必须在后台线程启动前调用）。"""
+    with _MESH_EVENTS_LOCK:
+        _MESH_READY_EVENTS[object_id] = threading.Event()
+
+
+def _signal_mesh_ready(object_id: str) -> None:
+    """通知 mesh 下载已完成（成功或失败），唤醒所有等待者。"""
+    with _MESH_EVENTS_LOCK:
+        event = _MESH_READY_EVENTS.get(object_id)
+    if event is not None:
+        event.set()
+
+
+def wait_for_mesh_ready(object_id: str) -> bool:
+    """阻塞等待指定 object_id 的 mesh 下载完成。
+
+    若 object_id 不在注册表（表示无后台下载任务），立即返回 True。
+    等待完成后自动清理注册表条目。
+
+    Returns:
+        True 表示等待完成（或无需等待）。
+    """
+    with _MESH_EVENTS_LOCK:
+        event = _MESH_READY_EVENTS.get(object_id)
+
+    if event is None:
+        return True
+
+    event.wait()
+
+    with _MESH_EVENTS_LOCK:
+        _MESH_READY_EVENTS.pop(object_id, None)
+
+    return True
+
 
 def _sanitize_name(s: str, allow_spaces: bool = False) -> str:
     """
@@ -273,6 +320,8 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
 
         except Exception as e:
             logger.error(f"Rodin 3D 后台下载异常: {e}")
+        finally:
+            _signal_mesh_ready(object_dir_name)
 
     # ==================== 主工具函数 ====================
     def _rodin_generate_3d(
@@ -465,6 +514,8 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
 
             # 启动后台线程继续下载 mesh 等，并注册到资源管理器
             if rest_items:
+                # 在线程启动前注册 Event，保证 wait 方不会错过信号
+                _register_mesh_event(object_dir_name)
                 bg_thread = threading.Thread(
                     target=_download_rest_files_async,
                     args=(

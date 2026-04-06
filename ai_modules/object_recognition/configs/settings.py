@@ -35,7 +35,7 @@ def OBJECT_RECOGNITION_SETTINGS() -> Dict[str, Any]:
         "storage_instruction": "Represent this document for retrieval:",
         "query_instruction": "Represent the query for retrieving relevant documents:",
         # 目录自动扫描
-        "auto_scan_dir": "",
-        "auto_scan_embed": False,
+        "auto_scan_dir": str(get_app_config().paths.assets_model_dir),
+        "auto_scan_embed": True,
         "auto_scan_max_images": 6,
     }

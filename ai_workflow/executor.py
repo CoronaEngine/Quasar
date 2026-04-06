@@ -25,8 +25,9 @@ from ai_workflow.adapter import (
     parse_request,
     format_response,
 )
+from ai_workflow.loop_state import update_loop_global_assets
 from ai_workflow.registry import get_workflow_registry
-from ai_workflow.state import WorkflowState
+from ai_workflow.state import WorkflowState, deep_merge_dict
 from ai_tools.common import build_error_response
 from ai_tools.context import (
     set_current_session,
@@ -91,6 +92,30 @@ def run_workflow(
         # 执行工作流
         final_state: WorkflowState = graph.invoke(state)
 
+        # 回写 global_assets 到循环状态（工作流测试模式可控制是否回写）
+        final_assets = final_state.get("global_assets")
+        metadata = final_state.get("metadata", {})
+        workflow_test = metadata.get("workflow_test", False)
+        persist_to_loop_state = metadata.get("persist_to_loop_state", False)
+
+        if isinstance(final_assets, dict) and final_assets:
+            # 工作流测试模式：只有显式开启 persist_to_loop_state 才回写
+            if workflow_test:
+                if persist_to_loop_state:
+                    logger.info(
+                        f"[Workflow] Test mode with persist enabled: "
+                        f"writing global_assets to loop_state (session={session_id})"
+                    )
+                    update_loop_global_assets(session_id, final_assets)
+                else:
+                    logger.info(
+                        f"[Workflow] Test mode: skipping global_assets sync to loop_state "
+                        f"(persist_to_loop_state=False, session={session_id})"
+                    )
+            else:
+                # 正常模式：总是回写
+                update_loop_global_assets(session_id, final_assets)
+
         # 格式化输出
         return format_response(final_state, interface_type=interface_type)
 
@@ -116,7 +141,7 @@ def stream_workflow(
     """流式执行工作流，在指定检查点节点完成时 yield 中间结果。
 
     使用 LangGraph 的 stream 模式逐节点执行。每当某个检查点节点完成
-    且 state 中存在 output_llm_content 时，yield 一次格式化的响应。
+    且 state 中存在 dialogue_entries 时，yield 一次格式化的响应。
 
     Args:
         function_id: 功能 ID
@@ -160,11 +185,34 @@ def stream_workflow(
                 f"function_id={function_id}, session={session_id}"
             )
             final_state: WorkflowState = graph.invoke(state)
+            # 在工作流完整执行完毕时回写 global_assets（工作流测试模式可控制是否回写）
+            if not final_state.get("awaiting_review"):
+                final_assets = final_state.get("global_assets")
+                metadata = final_state.get("metadata", {})
+                workflow_test = metadata.get("workflow_test", False)
+                persist_to_loop_state = metadata.get("persist_to_loop_state", False)
+
+                if isinstance(final_assets, dict) and final_assets:
+                    if workflow_test:
+                        if persist_to_loop_state:
+                            logger.info(
+                                f"[Stream] Test mode with persist enabled: "
+                                f"writing global_assets to loop_state (session={session_id})"
+                            )
+                            update_loop_global_assets(session_id, final_assets)
+                        else:
+                            logger.info(
+                                f"[Stream] Test mode: skipping global_assets sync to loop_state "
+                                f"(persist_to_loop_state=False, session={session_id})"
+                            )
+                    else:
+                        update_loop_global_assets(session_id, final_assets)
             yield format_response(final_state, interface_type=interface_type)
             return
 
         checkpoints = checkpoint_nodes
-        yielded_content_len = 0
+        accumulated_assets: dict[str, Any] = {}
+        ended_awaiting_review = False
 
         logger.info(
             f"Streaming workflow function_id={function_id}, session={session_id}, "
@@ -174,21 +222,28 @@ def stream_workflow(
         for chunk in graph.stream(state, stream_mode="updates"):
             # chunk 格式: {"node_name": {partial_state_update}}
             for node_name, node_update in chunk.items():
+                if not isinstance(node_update, dict):
+                    continue
+
+                # 追踪 awaiting_review 最终状态（True=工作流暂停在审核点）
+                if "awaiting_review" in node_update:
+                    ended_awaiting_review = bool(node_update["awaiting_review"])
+
+                # 累积所有节点的 global_assets 增量
+                ga_delta = node_update.get("global_assets")
+                if isinstance(ga_delta, dict) and ga_delta:
+                    accumulated_assets = deep_merge_dict(
+                        accumulated_assets, ga_delta
+                    )
+
                 if node_name not in checkpoints:
                     continue
 
-                # 节点更新后需要重建完整 state 来获取 output_llm_content
-                # stream 模式下每个 chunk 是增量更新，需要合并
-                llm_content = node_update.get("output_llm_content", [])
-                if not llm_content:
-                    continue
-
-                # 仅 yield 本轮新增的 llm_content
-                new_entries = llm_content[yielded_content_len:]
+                # stream_mode="updates" 下，node_update 是节点本轮新增的增量，
+                # 直接取 dialogue_entries 即为该节点新产生的条目。
+                new_entries = node_update.get("dialogue_entries", [])
                 if not new_entries:
                     continue
-
-                yielded_content_len = len(llm_content)
 
                 from ai_tools.common import build_success_response
 
@@ -198,11 +253,33 @@ def stream_workflow(
                     metadata=state.get("metadata", {}),
                     llm_content=new_entries,
                 )
+
                 logger.info(
                     f"[Stream] Checkpoint '{node_name}': "
                     f"yield {len(new_entries)} content entries"
                 )
                 yield response
+
+        # 在工作流完整执行完毕时回写 global_assets（工作流测试模式可控制是否回写）
+        if accumulated_assets and not ended_awaiting_review:
+            metadata = state.get("metadata", {})
+            workflow_test = metadata.get("workflow_test", False)
+            persist_to_loop_state = metadata.get("persist_to_loop_state", False)
+
+            if workflow_test:
+                if persist_to_loop_state:
+                    logger.info(
+                        f"[Stream] Test mode with persist enabled: "
+                        f"writing accumulated_assets to loop_state (session={session_id})"
+                    )
+                    update_loop_global_assets(session_id, accumulated_assets)
+                else:
+                    logger.info(
+                        f"[Stream] Test mode: skipping accumulated_assets sync to loop_state "
+                        f"(persist_to_loop_state=False, session={session_id})"
+                    )
+            else:
+                update_loop_global_assets(session_id, accumulated_assets)
 
     except Exception as e:
         logger.error(f"Streaming workflow execution failed: {e}", exc_info=True)

@@ -9,14 +9,12 @@
 DAG 拓扑：
   START → dispatch_node → retrieve_or_generate_node → register_node → format_result_node → END
 
-保持对外接口兼容（function_id、WORKFLOWS / WORKFLOW_COMMANDS 导出、
-output_llm_content 结构）。
+保持对外接口约定（function_id、WORKFLOWS / WORKFLOW_COMMANDS 导出）。
 """
 
 from __future__ import annotations
 
 import concurrent.futures
-import hashlib
 import json
 import logging
 import re
@@ -29,7 +27,8 @@ from langgraph.graph import END, START, StateGraph
 
 from ai_config.ai_config import get_ai_config
 from ai_tools.registry import get_tool_registry
-from ai_workflow.state import WorkflowState
+from ai_workflow.state import ModelRetrievalWorkflowState
+from ai_workflow.streaming import FormatterFunc, stream_output_node
 from config.app_config import get_app_config
 
 if TYPE_CHECKING:
@@ -44,6 +43,94 @@ SEARCH_DISTANCE_THRESHOLD = 0.3
 SEARCH_MAX_WORKERS = 1
 GENERATION_MAX_WORKERS = 1
 
+# ---------------------------------------------------------------------------
+# 工作流内置测试样例
+# ---------------------------------------------------------------------------
+
+_TEST_CASE_DATA: Dict[str, Dict[str, Any]] = {
+    "default": {
+        # 模拟第一步工作流的 global_assets 结构
+        "global_assets": {
+            "multi_scene": {
+                "approved_elements": [
+                    {
+                        "item_name": "现代沙发",
+                        "image_prompt": "A modern minimalist sofa...",
+                        "layout_desc": "放置于客厅中央",
+                    },
+                    {
+                        "item_name": "艺术落地灯",
+                        "image_prompt": "An artistic floor lamp...",
+                        "layout_desc": "置于沙发侧旁",
+                    },
+                ],
+                "generated_images": {
+                    "现代沙发": "file://test_sofa.jpg",
+                    "艺术落地灯": "file://test_lamp.jpg",
+                },
+            }
+        },
+        # 预期的模型检索/生成结果（可选，用于完整流程测试）
+        "expected_model_results": [
+            {
+                "item_name": "现代沙发",
+                "object_id": "modern_sofa",
+                "source": "retrieval",
+                "distance": 0.15,
+            },
+            {
+                "item_name": "艺术落地灯",
+                "object_id": "art_lamp",
+                "source": "generation",
+                "model_path": "/models/art_lamp/base.glb",
+            },
+        ],
+    },
+    "input_only": {
+        # 仅提供第二步工作流所需输入，不提供任何预期输出。
+        # dispatch 会使用这些输入组装任务，后续 retrieve / generate /
+        # register / format_result 都走真实逻辑。
+        "global_assets": {
+            "multi_scene": {
+                "approved_elements": [
+                    {
+                        "item_name": "现代沙发",
+                        "image_prompt": "A modern minimalist sofa with clean lines, premium fabric, isolated on white background",
+                        "layout_desc": "放置于客厅中央，形成主要会客区。",
+                    },
+                    {
+                        "item_name": "艺术落地灯",
+                        "image_prompt": "An artistic floor lamp, contemporary design, warm ambient style, isolated on white background",
+                        "layout_desc": "置于沙发侧后方，提供辅助氛围照明。",
+                    },
+                ],
+                "generated_images": {
+                    "现代沙发": "D:\\CodeLib\\storage_root\\media_storage\\resource_4dafc270e3e44c7ea514215b406b80ab_c4efd90a-31a1-11f1-b3e9-68ecc582fadb.png",
+                    "艺术落地灯": "D:\\CodeLib\\storage_root\\media_storage\\resource_4dafc270e3e44c7ea514215b406b80ab_c032ee4b-31a1-11f1-bbb2-68ecc582fadb.png",
+                },
+            }
+        },
+    },
+}
+
+
+def _get_test_case(test_case_key: str) -> Dict[str, Any]:
+    """获取指定测试样例的完整 state 覆盖数据。
+
+    Args:
+        test_case_key: 样例键名，如 "default" 或 "input_only"
+
+    Returns:
+        该样例对应的 state 覆盖字段字典（包含 global_assets 和其他测试数据）。
+        如果样例不存在，返回空字典。
+    """
+    case_data = _TEST_CASE_DATA.get(test_case_key or "default", {})
+    logger.info(
+        f"[ModelRetrieval][test_case] Loaded test case: {test_case_key or 'default'}, "
+        f"fields={list(case_data.keys())}"
+    )
+    return dict(case_data)
+
 
 def _normalize_object_id(name: str, fallback_index: int) -> str:
     """将物体名转换为 object_id 友好的目录名。"""
@@ -54,32 +141,32 @@ def _normalize_object_id(name: str, fallback_index: int) -> str:
         cleaned = f"object_{fallback_index:02d}"
     return cleaned[:64]
 
+
 # ---------------------------------------------------------------------------
 # 工具获取
 # ---------------------------------------------------------------------------
 
 
-def _ensure_tools_loaded():
-    """确保工具注册表已加载"""
+def _get_tool(name: str) -> Any:
+    """从工具注册表中按名称获取工具，按需触发懒加载。"""
     registry = get_tool_registry()
-    if not registry.list_tools():
+    tools = registry.list_tools()
+    if not tools:
         from ai_tools.load_tools import load_tools
 
         load_tools(get_ai_config())
+        tools = registry.list_tools()
+    return {t.name: t for t in tools}.get(name)
 
 
 def _get_search_tool():
     """获取物体搜索工具 (search_similar_object)"""
-    _ensure_tools_loaded()
-    registry = get_tool_registry()
-    return {t.name: t for t in registry.list_tools()}.get("search_similar_object")
+    return _get_tool("search_similar_object")
 
 
 def _get_3d_generate_tool():
     """获取 3D 模型生成工具 (rodin_generate_3d)"""
-    _ensure_tools_loaded()
-    registry = get_tool_registry()
-    return {t.name: t for t in registry.list_tools()}.get("rodin_generate_3d")
+    return _get_tool("rodin_generate_3d")
 
 
 # ---------------------------------------------------------------------------
@@ -87,27 +174,8 @@ def _get_3d_generate_tool():
 # ---------------------------------------------------------------------------
 
 
-def _build_llm_content(text_parts: List[str]) -> List[Dict[str, Any]]:
-    """构建兼容旧系统的 output_llm_content 列表"""
-    entries: List[Dict[str, Any]] = []
-    timestamp = int(time.time())
-    for text in text_parts:
-        entries.append(
-            {
-                "role": "assistant",
-                "interface_type": "integrated",
-                "sent_time_stamp": timestamp,
-                "part": [
-                    {
-                        "content_type": "text",
-                        "content_text": text,
-                        "content_url": "",
-                        "parameter": {},
-                    }
-                ],
-            }
-        )
-    return entries
+# 不产生对话输出的节点使用空 formatter，仅借助装饰器做 error/awaiting_review 拦截。
+_NO_OUTPUT: FormatterFunc = lambda _data, _state: []
 
 
 def _parse_tool_result(raw_result: Any) -> Dict[str, Any]:
@@ -160,30 +228,54 @@ def _parse_search_result(raw_result: Any) -> Dict[str, Any]:
 
 
 def _parse_3d_result(raw_result: Any) -> Dict[str, Any]:
-    """解析 rodin_generate_3d 返回值，提取模型文件路径与元数据。"""
+    """解析 rodin_generate_3d 返回值，提取模型文件路径与元数据。
+
+    工具返回的 envelope 中:
+    - ``metadata`` 包含 ``model_folder``、``has_mesh_pending``、``object_id`` 等信息
+    - ``parts`` 只包含 ``content_type == "image"`` 的预览图（mesh 在后台线程下载）
+    - 模型文件路径通过 ``model_folder`` + 约定文件名 ``base.<ext>`` 推导
+    """
     try:
         parsed = _parse_tool_result(raw_result)
         error_message = _extract_tool_error(parsed)
         if error_message:
             return {"error": error_message}
 
+        metadata = parsed.get("metadata") or {}
+        model_folder: str = metadata.get("model_folder", "")
+        has_mesh_pending: bool = metadata.get("has_mesh_pending", False)
+        meta_object_id: str = metadata.get("object_id", "")
+
         parts = parsed["llm_content"][0]["part"]
-        model_path = ""
-        parameter: Dict[str, Any] = {}
         preview_paths: List[str] = []
+        geometry_file_format = "glb"
+
         for part in parts:
-            content_type = part.get("content_type")
-            if content_type == "file" and not model_path:
-                model_path = part.get("content_text", "")
-                parameter = part.get("parameter", {}) or {}
-            elif content_type == "image":
+            if part.get("content_type") == "image":
                 preview_path = part.get("content_text") or part.get("content_url") or ""
                 if preview_path:
                     preview_paths.append(preview_path)
+                # 尝试从 part parameter 中获取格式信息
+                part_param = part.get("parameter") or {}
+                fmt = part_param.get("geometry_file_format", "")
+                if fmt:
+                    geometry_file_format = fmt
 
-        if model_path:
-            if preview_paths:
-                parameter = {**parameter, "preview_paths": preview_paths}
+        # metadata 中的格式优先
+        geometry_file_format = metadata.get(
+            "geometry_file_format", geometry_file_format
+        )
+
+        if model_folder:
+            # 模型文件路径 = model_folder/base.<ext>，与后台下载的命名约定一致
+            model_path = f"{model_folder}/base.{geometry_file_format}"
+            parameter: Dict[str, Any] = {
+                "preview_paths": preview_paths,
+                "model_folder": model_folder,
+                "geometry_file_format": geometry_file_format,
+                "has_mesh_pending": has_mesh_pending,
+                "object_id": meta_object_id,
+            }
             return {
                 "model_path": model_path,
                 "parameter": parameter,
@@ -217,8 +309,12 @@ def _get_recognition_db_config() -> Dict[str, Any]:
     }
 
 
-def _build_placeholder_embedding(object_id: str, model_path: str, vector_dim: int) -> np.ndarray:
-    """生成可复现的伪向量，先打通入库流程，后续可替换为六面图真实嵌入。"""
+def _build_placeholder_embedding(
+    object_id: str, model_path: str, vector_dim: int
+) -> np.ndarray:
+    """生成可复现的伪向量兜底，仅在嵌入模型不可用时使用。"""
+    import hashlib
+
     seed_text = f"{object_id}|{model_path}"
     seed_bytes = hashlib.sha256(seed_text.encode("utf-8")).digest()[:8]
     seed = int.from_bytes(seed_bytes, byteorder="big", signed=False)
@@ -230,22 +326,143 @@ def _build_placeholder_embedding(object_id: str, model_path: str, vector_dim: in
     return vec
 
 
+def _get_embedding_client():
+    """获取 Qwen3-VL-Embedding 客户端单例，按需从配置初始化。"""
+    from ai_modules.object_recognition.configs.dataclasses import (
+        EmbeddingModelConfig,
+        RecognitionConfig,
+    )
+    from ai_modules.object_recognition.tools.client_embedding import (
+        get_embedding_client,
+    )
+
+    cfg = get_ai_config()
+    raw = getattr(cfg, "object_recognition", None)
+
+    if isinstance(raw, dict):
+        embedding_raw = raw.get("embedding", {}) or {}
+        embedding_cfg = (
+            EmbeddingModelConfig(**embedding_raw)
+            if embedding_raw
+            else EmbeddingModelConfig()
+        )
+    elif isinstance(raw, RecognitionConfig):
+        embedding_cfg = raw.embedding
+    else:
+        embedding_cfg = EmbeddingModelConfig()
+
+    return get_embedding_client(embedding_cfg)
+
+
+# ---------------------------------------------------------------------------
+# 节点格式化器（Formatters）— 将业务数据转换为前端 parts
+# ---------------------------------------------------------------------------
+
+
+def _format_model_result_parts(
+    data: Dict[str, Any],
+    state: ModelRetrievalWorkflowState,
+) -> List[Dict[str, Any]]:
+    """将模型检索/生成结果格式化为前端 parts。"""
+    model_results = state.get("model_results", [])
+    # 直接复用 format_result_node 已计算好的统计量，无需重复 sum()
+    mr_stats = data.get("global_assets", {}).get("model_retrieval", {})
+    retrieval_count = mr_stats.get("retrieval_count", 0)
+    generation_count = mr_stats.get("generation_count", 0)
+    error_count = mr_stats.get("error_count", 0)
+
+    md_parts: List[str] = ["## 模型检索与生成结果\n"]
+
+    for r in model_results:
+        name = r.get("item_name", "未知")
+        source = r.get("source", "")
+        error = r.get("error", "")
+
+        if error and not source:
+            md_parts.append(f"### {name}\n- **状态**: ❌ 失败 — {error}\n")
+        elif source == "retrieval":
+            object_id = r.get("object_id", "")
+            distance = r.get("distance", 0)
+            md_parts.append(
+                f"### {name}\n"
+                f"- **来源**: 检索命中\n"
+                f"- **模型 ID**: {object_id}\n"
+                f"- **相似度距离**: {distance:.4f}\n"
+            )
+        elif source == "generation":
+            model_path = r.get("model_path", "")
+            register_status = r.get("register_status", "")
+            if error:
+                md_parts.append(
+                    f"### {name}\n" f"- **来源**: 3D 生成\n" f"- **状态**: ⚠️ {error}\n"
+                )
+            else:
+                register_line = (
+                    f"- **入库状态**: {register_status}\n" if register_status else ""
+                )
+                md_parts.append(
+                    f"### {name}\n"
+                    f"- **来源**: 3D 生成\n"
+                    f"- **模型文件**: {model_path}\n"
+                    f"{register_line}"
+                )
+        else:
+            md_parts.append(f"### {name}\n- **状态**: 未知\n")
+
+    md_parts.append(
+        f"\n---\n**汇总**: 共 {len(model_results)} 个物体 — "
+        f"检索命中 {retrieval_count}, "
+        f"3D 生成 {generation_count}, "
+        f"失败 {error_count}"
+    )
+
+    return [
+        {
+            "content_type": "text",
+            "content_text": "\n".join(md_parts),
+            "content_url": "",
+            "parameter": {},
+        }
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Node 1: dispatch_node — 组装任务清单
 # ---------------------------------------------------------------------------
 
 
-def dispatch_node(state: WorkflowState) -> Dict[str, Any]:
+@stream_output_node("integrated", _NO_OUTPUT)
+def dispatch_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
     """从第一步的输出中组装每个物体的检索/生成任务。
 
-    读取 approved_elements 与 generated_images，为每个有图片的物体
-    创建 {item_name, image_url, image_prompt} 任务项。
-    """
-    if state.get("error"):
-        return {}
+    优先从 global_assets["multi_scene"] 读取上游工作流写入的结果，
+    兼容直接注入 approved_elements / generated_images 的调用方式。
 
-    approved = state.get("approved_elements", [])
-    generated_images: Dict[str, str] = state.get("generated_images", {})
+    在工作流内置测试模式下，优先使用样例中的 global_assets。
+    """
+    metadata = state.get("metadata", {})
+    global_assets = state.get("global_assets", {}) or {}
+
+    # 工作流内置测试模式：优先使用测试样例的 global_assets
+    if metadata.get("workflow_test"):
+        test_case_key = metadata.get("workflow_test_case", "default")
+        test_data = _get_test_case(test_case_key)
+        test_assets = test_data.get("global_assets", {})
+        if test_assets:
+            logger.info(
+                "[Workflow][dispatch][TEST] 工作流测试模式，使用预定义 global_assets: "
+                f"test_case={test_case_key}"
+            )
+            global_assets = test_assets
+
+    multi_scene = global_assets.get("multi_scene", {}) or {}
+
+    approved = multi_scene.get("approved_elements") or state.get(
+        "approved_elements", []
+    )
+    generated_images: Dict[str, str] = multi_scene.get("generated_images") or state.get(
+        "generated_images", {}
+    )
 
     if not approved:
         return {"error": "无可处理的设计元素（第一步输出为空）"}
@@ -258,12 +475,14 @@ def dispatch_node(state: WorkflowState) -> Dict[str, Any]:
             logger.warning(f"[Workflow][dispatch] {name} 无生成图片，跳过")
             continue
         object_id = _normalize_object_id(name, idx)
-        tasks.append({
-            "item_name": name,
-            "object_id": object_id,
-            "image_url": image_url,
-            "image_prompt": elem.get("image_prompt", ""),
-        })
+        tasks.append(
+            {
+                "item_name": name,
+                "object_id": object_id,
+                "image_url": image_url,
+                "image_prompt": elem.get("image_prompt", ""),
+            }
+        )
 
     if not tasks:
         return {"error": "所有物体均无生成图片，无法进行模型检索"}
@@ -297,21 +516,25 @@ def _retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, A
     }
 
     if not search_tool:
-        result.update({
-            "source": "pending_generation",
-            "search_status": "tool_unavailable",
-        })
+        result.update(
+            {
+                "source": "pending_generation",
+                "search_status": "tool_unavailable",
+            }
+        )
         return result
 
     started_at = time.perf_counter()
     logger.info(f"[Workflow][retrieve] {name} 开始检索")
 
     try:
-        raw = search_tool.invoke({
-            "query_images": [image_url],
-            "query_text": image_prompt,
-            "top_k": 1,
-        })
+        raw = search_tool.invoke(
+            {
+                "query_images": [image_url],
+                "query_text": image_prompt,
+                "top_k": 1,
+            }
+        )
         search_info = _parse_search_result(raw)
         matches = search_info.get("matches", [])
         search_error = search_info.get("error", "")
@@ -322,22 +545,26 @@ def _retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, A
                 f"[Workflow][retrieve] {name} 检索失败，将降级生成: "
                 f"{search_error} (elapsed={elapsed:.2f}s)"
             )
-            result.update({
-                "source": "pending_generation",
-                "search_status": "error",
-                "search_error": search_error,
-            })
+            result.update(
+                {
+                    "source": "pending_generation",
+                    "search_status": "error",
+                    "search_error": search_error,
+                }
+            )
             return result
 
         if matches and matches[0].get("distance", 999) < SEARCH_DISTANCE_THRESHOLD:
             best = matches[0]
-            result.update({
-                "source": "retrieval",
-                "object_id": best.get("object_id", ""),
-                "name": best.get("name", ""),
-                "distance": best.get("distance", 0),
-                "search_elapsed_seconds": round(elapsed, 3),
-            })
+            result.update(
+                {
+                    "source": "retrieval",
+                    "object_id": best.get("object_id", ""),
+                    "name": best.get("name", ""),
+                    "distance": best.get("distance", 0),
+                    "search_elapsed_seconds": round(elapsed, 3),
+                }
+            )
             logger.info(
                 f"[Workflow][retrieve] {name} 检索命中: "
                 f"object_id={best.get('object_id')}, "
@@ -351,12 +578,14 @@ def _retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, A
             f"[Workflow][retrieve] {name} 检索未命中"
             f"（最佳 distance={best_distance}, elapsed={elapsed:.2f}s）"
         )
-        result.update({
-            "source": "pending_generation",
-            "search_status": "miss",
-            "best_distance": best_distance,
-            "search_elapsed_seconds": round(elapsed, 3),
-        })
+        result.update(
+            {
+                "source": "pending_generation",
+                "search_status": "miss",
+                "best_distance": best_distance,
+                "search_elapsed_seconds": round(elapsed, 3),
+            }
+        )
         return result
     except Exception as e:
         elapsed = time.perf_counter() - started_at
@@ -364,12 +593,14 @@ def _retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, A
             f"[Workflow][retrieve] {name} 检索异常，将降级生成: "
             f"{e} (elapsed={elapsed:.2f}s)"
         )
-        result.update({
-            "source": "pending_generation",
-            "search_status": "error",
-            "search_error": str(e),
-            "search_elapsed_seconds": round(elapsed, 3),
-        })
+        result.update(
+            {
+                "source": "pending_generation",
+                "search_status": "error",
+                "search_error": str(e),
+                "search_elapsed_seconds": round(elapsed, 3),
+            }
+        )
         return result
 
 
@@ -398,11 +629,13 @@ def _generate_single_item(task: Dict[str, Any], generate_tool: Any) -> Dict[str,
     logger.info(f"[Workflow][generate] {name} 开始 3D 生成")
 
     try:
-        raw = generate_tool.invoke({
-            "mode": "image_to_3d",
-            "images": [image_url],
-            "object_id": object_id,
-        })
+        raw = generate_tool.invoke(
+            {
+                "mode": "image_to_3d",
+                "images": [image_url],
+                "object_id": object_id,
+            }
+        )
         model_info = _parse_3d_result(raw)
         elapsed = time.perf_counter() - started_at
 
@@ -417,12 +650,14 @@ def _generate_single_item(task: Dict[str, Any], generate_tool: Any) -> Dict[str,
                 result["search_error"] = search_error
             return result
 
-        result.update({
-            "source": "generation",
-            "model_path": model_info.get("model_path", ""),
-            "parameter": model_info.get("parameter", {}),
-            "generation_elapsed_seconds": round(elapsed, 3),
-        })
+        result.update(
+            {
+                "source": "generation",
+                "model_path": model_info.get("model_path", ""),
+                "parameter": model_info.get("parameter", {}),
+                "generation_elapsed_seconds": round(elapsed, 3),
+            }
+        )
         if search_error:
             result["search_error"] = search_error
 
@@ -434,8 +669,7 @@ def _generate_single_item(task: Dict[str, Any], generate_tool: Any) -> Dict[str,
     except Exception as e:
         elapsed = time.perf_counter() - started_at
         logger.error(
-            f"[Workflow][generate] {name} 3D 生成失败: {e} "
-            f"(elapsed={elapsed:.2f}s)"
+            f"[Workflow][generate] {name} 3D 生成失败: {e} " f"(elapsed={elapsed:.2f}s)"
         )
         result.update({"source": "generation", "error": str(e)})
         if search_error:
@@ -443,10 +677,9 @@ def _generate_single_item(task: Dict[str, Any], generate_tool: Any) -> Dict[str,
         return result
 
 
-def retrieve_or_generate_node(state: WorkflowState) -> Dict[str, Any]:
+@stream_output_node("integrated", _NO_OUTPUT)
+def retrieve_or_generate_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
     """先完成全部检索，再对未命中的物体并发生成 3D 模型。"""
-    if state.get("error"):
-        return {}
 
     tasks = state.get("intermediate", {}).get("retrieval_tasks", [])
     if not tasks:
@@ -466,49 +699,43 @@ def retrieve_or_generate_node(state: WorkflowState) -> Dict[str, Any]:
         for index, task in enumerate(tasks, start=1)
     ]
 
-    if SEARCH_MAX_WORKERS <= 1:
-        for task in indexed_tasks:
-            retrieved = _retrieve_single_item(task, search_tool)
+    max_workers = min(len(indexed_tasks), SEARCH_MAX_WORKERS) or 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(_retrieve_single_item, task, search_tool): task
+            for task in indexed_tasks
+        }
+        for future in concurrent.futures.as_completed(futures):
+            task = futures[future]
+            try:
+                retrieved = future.result()
+            except Exception as e:
+                logger.error(
+                    f"[Workflow][retrieve_or_generate] "
+                    f"{task.get('item_name', '?')} 检索任务异常: {e}"
+                )
+                retrieved = {
+                    "item_name": task.get("item_name", "未知"),
+                    "object_id": task.get("object_id", ""),
+                    "task_index": task.get("task_index", 0),
+                    "input_image_url": task.get("image_url", ""),
+                    "source": "pending_generation",
+                    "search_status": "error",
+                    "search_error": str(e),
+                }
+
             if retrieved.get("source") == "retrieval":
                 retrieval_results.append(retrieved)
             else:
                 pending_generation.append(retrieved)
-    else:
-        max_workers = min(len(indexed_tasks), SEARCH_MAX_WORKERS)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(_retrieve_single_item, task, search_tool): task
-                for task in indexed_tasks
-            }
-            for future in concurrent.futures.as_completed(futures):
-                task = futures[future]
-                try:
-                    retrieved = future.result()
-                except Exception as e:
-                    logger.error(
-                        f"[Workflow][retrieve_or_generate] "
-                        f"{task.get('item_name', '?')} 检索任务异常: {e}"
-                    )
-                    retrieved = {
-                        "item_name": task.get("item_name", "未知"),
-                        "object_id": task.get("object_id", ""),
-                        "task_index": task.get("task_index", 0),
-                        "input_image_url": task.get("image_url", ""),
-                        "source": "pending_generation",
-                        "search_status": "error",
-                        "search_error": str(e),
-                    }
-
-                if retrieved.get("source") == "retrieval":
-                    retrieval_results.append(retrieved)
-                else:
-                    pending_generation.append(retrieved)
 
     generated_results: List[Dict[str, Any]] = []
     if pending_generation:
         generate_tool = _get_3d_generate_tool()
         if not generate_tool:
-            logger.warning("[Workflow][retrieve_or_generate] 3D 生成工具不可用，未命中项将返回错误")
+            logger.warning(
+                "[Workflow][retrieve_or_generate] 3D 生成工具不可用，未命中项将返回错误"
+            )
 
         max_workers = min(len(pending_generation), GENERATION_MAX_WORKERS) or 1
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -525,30 +752,29 @@ def retrieve_or_generate_node(state: WorkflowState) -> Dict[str, Any]:
                         f"[Workflow][retrieve_or_generate] "
                         f"{task.get('item_name', '?')} 生成任务异常: {e}"
                     )
-                    generated_results.append({
-                        "item_name": task.get("item_name", "未知"),
-                        "object_id": task.get("object_id", ""),
-                        "task_index": task.get("task_index", 0),
-                        "input_image_url": task.get("input_image_url", ""),
-                        "source": "generation",
-                        "error": str(e),
-                    })
+                    generated_results.append(
+                        {
+                            "item_name": task.get("item_name", "未知"),
+                            "object_id": task.get("object_id", ""),
+                            "task_index": task.get("task_index", 0),
+                            "input_image_url": task.get("input_image_url", ""),
+                            "source": "generation",
+                            "error": str(e),
+                        }
+                    )
 
     results = sorted(
         retrieval_results + generated_results,
         key=lambda item: item.get("task_index", 0),
     )
 
-    retrieval_count = sum(1 for r in results if r.get("source") == "retrieval")
-    generation_count = sum(
-        1 for r in results
-        if r.get("source") == "generation" and not r.get("error")
-    )
-    error_count = sum(1 for r in results if r.get("error"))
-
     logger.info(
-        f"[Workflow][retrieve_or_generate] 完成: "
-        f"检索命中 {retrieval_count}, 生成 {generation_count}, 失败 {error_count}"
+        "[Workflow][retrieve_or_generate] 完成: " "检索命中 %s, 生成 %s, 失败 %s",
+        sum(1 for r in results if r.get("source") == "retrieval"),
+        sum(
+            1 for r in results if r.get("source") == "generation" and not r.get("error")
+        ),
+        sum(1 for r in results if r.get("error")),
     )
 
     return {"model_results": results}
@@ -559,21 +785,21 @@ def retrieve_or_generate_node(state: WorkflowState) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def register_node(state: WorkflowState) -> Dict[str, Any]:
-    """入库登记节点（临时实现）。
+@stream_output_node("integrated", _NO_OUTPUT)
+def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
+    """入库登记节点。
 
-    在六面图嵌入能力就绪前，先为生成结果创建/更新 object_recognition 记录：
-    - object_metadata: 名称、分类、图片路径等
-    - object_vectors: 使用可复现伪向量占位
+    对每个生成成功的物体，调用 Qwen3-VL-Embedding 生成存储侧嵌入向量并写入向量数据库。
+    有图片时将图片与文本一起融合为向量；无图片时以物体名称作为纯文本输入触发嵌入。
+    嵌入模型不可用时自动降级为可复现占位向量，保证入库流程不中断。
     """
-    if state.get("error"):
-        return {}
 
     model_results = state.get("model_results", [])
     if not model_results:
         return {}
 
     from ai_modules.object_recognition.tools.vector_db import VectorDB
+    from ai_modules.three_d_generate.tools.model_tools import wait_for_mesh_ready
 
     cfg = _get_recognition_db_config()
     vector_db = VectorDB(
@@ -597,9 +823,28 @@ def register_node(state: WorkflowState) -> Dict[str, Any]:
                 enriched_results.append(item)
                 continue
 
-            object_id = row.get("object_id") or _normalize_object_id(row.get("item_name", ""), idx)
+            object_id = row.get("object_id") or _normalize_object_id(
+                row.get("item_name", ""), idx
+            )
             model_path = row.get("model_path", "")
-            parameter = row.get("parameter", {}) if isinstance(row.get("parameter"), dict) else {}
+            parameter = (
+                row.get("parameter", {})
+                if isinstance(row.get("parameter"), dict)
+                else {}
+            )
+
+            # 等待后台 mesh 下载完成（Event 机制，不使用超时轮询）
+            if parameter.get("has_mesh_pending", False):
+                wait_object_id = parameter.get("object_id") or object_id
+                logger.info(
+                    "[Workflow][register] %s 等待后台 mesh 下载完成...",
+                    wait_object_id,
+                )
+                wait_for_mesh_ready(wait_object_id)
+                logger.info(
+                    "[Workflow][register] %s mesh 下载已完成",
+                    wait_object_id,
+                )
 
             image_paths: List[str] = []
             preview_paths = parameter.get("preview_paths", [])
@@ -618,11 +863,25 @@ def register_node(state: WorkflowState) -> Dict[str, Any]:
                     seen.add(p)
                     dedup_paths.append(p)
 
-            embedding = _build_placeholder_embedding(
-                object_id=object_id,
-                model_path=model_path,
-                vector_dim=cfg["vector_dim"],
-            )
+            # 调用真实嵌入模型；无图片时以 item_name 作为纯文本输入触发嵌入
+            item_name = row.get("item_name", "")
+            text_desc = item_name or object_id
+            try:
+                embedding = _get_embedding_client().embed_for_storage(
+                    image_paths=dedup_paths,
+                    text=text_desc,
+                )
+            except Exception as emb_exc:  # noqa: BLE001
+                logger.warning(
+                    "[Workflow][register] %s 嵌入模型调用失败，降级为占位向量: %s",
+                    object_id,
+                    emb_exc,
+                )
+                embedding = _build_placeholder_embedding(
+                    object_id=object_id,
+                    model_path=model_path,
+                    vector_dim=cfg["vector_dim"],
+                )
 
             try:
                 existing = vector_db.get_object(object_id)
@@ -630,10 +889,10 @@ def register_node(state: WorkflowState) -> Dict[str, Any]:
                     rowid = vector_db.insert_object(
                         object_id=object_id,
                         embedding=embedding,
-                        name=row.get("item_name", ""),
+                        name=item_name,
                         category="generated_3d",
                         image_paths=dedup_paths,
-                        description=f"placeholder_embedding: {model_path}",
+                        description=text_desc,
                     )
                     item["register_status"] = "inserted"
                     item["register_rowid"] = rowid
@@ -642,10 +901,10 @@ def register_node(state: WorkflowState) -> Dict[str, Any]:
                     updated = vector_db.update_object(
                         object_id=object_id,
                         embedding=embedding,
-                        name=row.get("item_name", ""),
+                        name=item_name,
                         category="generated_3d",
                         image_paths=dedup_paths,
-                        description=f"placeholder_embedding: {model_path}",
+                        description=text_desc,
                     )
                     if updated:
                         item["register_status"] = "updated"
@@ -685,83 +944,22 @@ def register_node(state: WorkflowState) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Node 4: format_result_node — 结果格式化
+# Node 4: format_result_node — 结果格式化与 global_assets 写入
 # ---------------------------------------------------------------------------
 
 
-def format_result_node(state: WorkflowState) -> Dict[str, Any]:
-    """汇总模型检索/生成结果，追加到已有的 output_llm_content 后面。
-
-    保留第一步（设计方案+图片）的输出，在其后追加第二步结果。
-    """
+@stream_output_node("integrated", _format_model_result_parts)
+def format_result_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
+    """汇总模型检索/生成结果，写入 global_assets 并通过 formatter 输出对话内容。"""
     model_results = state.get("model_results", [])
-    existing_output = list(state.get("output_llm_content", []))
 
-    md_parts: List[str] = ["## 模型检索与生成结果\n"]
-
-    for r in model_results:
-        name = r.get("item_name", "未知")
-        source = r.get("source", "")
-        error = r.get("error", "")
-
-        if error and not source:
-            md_parts.append(f"### {name}\n- **状态**: ❌ 失败 — {error}\n")
-        elif source == "retrieval":
-            object_id = r.get("object_id", "")
-            distance = r.get("distance", 0)
-            md_parts.append(
-                f"### {name}\n"
-                f"- **来源**: 检索命中\n"
-                f"- **模型 ID**: {object_id}\n"
-                f"- **相似度距离**: {distance:.4f}\n"
-            )
-        elif source == "generation":
-            model_path = r.get("model_path", "")
-            register_status = r.get("register_status", "")
-            if error:
-                md_parts.append(
-                    f"### {name}\n"
-                    f"- **来源**: 3D 生成\n"
-                    f"- **状态**: ⚠️ {error}\n"
-                )
-            else:
-                register_line = ""
-                if register_status:
-                    register_line = f"- **入库状态**: {register_status}\n"
-                md_parts.append(
-                    f"### {name}\n"
-                    f"- **来源**: 3D 生成\n"
-                    f"- **模型文件**: {model_path}\n"
-                    f"{register_line}"
-                )
-        else:
-            md_parts.append(f"### {name}\n- **状态**: 未知\n")
-
-    # 汇总统计
     retrieval_count = sum(1 for r in model_results if r.get("source") == "retrieval")
     generation_count = sum(
-        1 for r in model_results
+        1
+        for r in model_results
         if r.get("source") == "generation" and not r.get("error")
     )
     error_count = sum(1 for r in model_results if r.get("error"))
-
-    md_parts.append(
-        f"\n---\n**汇总**: 共 {len(model_results)} 个物体 — "
-        f"检索命中 {retrieval_count}, "
-        f"3D 生成 {generation_count}, "
-        f"失败 {error_count}"
-    )
-
-    final_markdown = "\n".join(md_parts)
-    output_content = existing_output + _build_llm_content([final_markdown])
-
-    intermediate = {
-        **state.get("intermediate", {}),
-        "workflow": "model_retrieval",
-        "retrieval_count": retrieval_count,
-        "generation_count": generation_count,
-        "error_count": error_count,
-    }
 
     logger.info(
         f"[Workflow][format_result] 完成: "
@@ -769,8 +967,21 @@ def format_result_node(state: WorkflowState) -> Dict[str, Any]:
     )
 
     return {
-        "output_llm_content": output_content,
-        "intermediate": intermediate,
+        "global_assets": {
+            "model_retrieval": {
+                "model_results": model_results,
+                "retrieval_count": retrieval_count,
+                "generation_count": generation_count,
+                "error_count": error_count,
+            }
+        },
+        "intermediate": {
+            **state.get("intermediate", {}),
+            "workflow": "model_retrieval",
+            "retrieval_count": retrieval_count,
+            "generation_count": generation_count,
+            "error_count": error_count,
+        },
     }
 
 
@@ -785,7 +996,7 @@ def build_model_retrieval_workflow() -> "CompiledStateGraph":
     拓扑：
         START → dispatch → retrieve_or_generate → register → format_result → END
     """
-    graph = StateGraph(WorkflowState)
+    graph = StateGraph(ModelRetrievalWorkflowState)
 
     graph.add_node("dispatch", dispatch_node)
     graph.add_node("retrieve_or_generate", retrieve_or_generate_node)

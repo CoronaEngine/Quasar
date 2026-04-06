@@ -30,11 +30,28 @@ from ai_workflow.registry import (
     WorkflowRegistry,
     get_workflow_registry,
 )
-from ai_workflow.state import WorkflowState
+from ai_workflow.state import BaseWorkflowState, WorkflowState
+from ai_workflow.bridge import (
+    RequestContext,
+    extract_text,
+    parse_command,
+    normalize_int_function_id,
+    resolve_workflow_command,
+    parse_request_context,
+    inject_function_id_and_prompt,
+)
 
 __all__ = [
     "run_workflow",
     "WorkflowRegistry",
     "get_workflow_registry",
+    "BaseWorkflowState",
     "WorkflowState",
+    "RequestContext",
+    "extract_text",
+    "parse_command",
+    "normalize_int_function_id",
+    "resolve_workflow_command",
+    "parse_request_context",
+    "inject_function_id_and_prompt",
 ]

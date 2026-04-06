@@ -7,8 +7,7 @@
       → generate_layout_text_node ─┤→ aggregate_result_node → END
 
 支持：多模态输入、Human-in-the-loop 审核、并行图文生成。
-保持对外接口兼容（function_id、WORKFLOWS / WORKFLOW_COMMANDS 导出、
-output_llm_content 结构）。
+保持对外接口约定（function_id、WORKFLOWS / WORKFLOW_COMMANDS 导出）。
 """
 
 from __future__ import annotations
@@ -16,13 +15,10 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import logging
-import base64
 from pathlib import Path
 import re
 import time
 from typing import Any, Dict, List, TYPE_CHECKING
-
-import httpx
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
@@ -36,7 +32,8 @@ from ai_models.base_pool import (
 )
 from ai_tools.registry import get_tool_registry
 from ai_workflow.executor import register_workflow_checkpoints
-from ai_workflow.state import WorkflowState
+from ai_workflow.state import MultiSceneWorkflowState
+from ai_workflow.streaming import FormatterFunc, stream_output_node
 from ai_tools.response_adapter import FILEID_SCHEME
 
 if TYPE_CHECKING:
@@ -96,7 +93,7 @@ def _extract_image_url(raw_result: Any) -> str:
     if extracted.startswith(FILEID_SCHEME):
         from ai_media_resource import get_media_registry
 
-        file_id = extracted[len(FILEID_SCHEME):]
+        file_id = extracted[len(FILEID_SCHEME) :]
         try:
             # 阻塞等待异步任务完成，获取可访问 URL。
             return get_media_registry().resolve(file_id)
@@ -121,29 +118,6 @@ def _to_display_url(url: str) -> str:
     if path.is_absolute():
         return path.as_uri()
     return url
-
-
-def _build_llm_content(text_parts: List[str]) -> List[Dict[str, Any]]:
-    """构建兼容旧系统的 output_llm_content 列表"""
-    entries: List[Dict[str, Any]] = []
-    timestamp = int(time.time())
-    for text in text_parts:
-        entries.append(
-            {
-                "role": "assistant",
-                "interface_type": "integrated",
-                "sent_time_stamp": timestamp,
-                "part": [
-                    {
-                        "content_type": "text",
-                        "content_text": text,
-                        "content_url": "",
-                        "parameter": {},
-                    }
-                ],
-            }
-        )
-    return entries
 
 
 def _clean_json_text(raw: str) -> str:
@@ -199,6 +173,118 @@ _FALLBACK_ELEMENTS: List[Dict[str, str]] = [
 ]
 
 # ---------------------------------------------------------------------------
+# 工作流内置测试样例
+# ---------------------------------------------------------------------------
+
+_TEST_CASE_DATA: Dict[str, Dict[str, Any]] = {
+    "default": {
+        "extracted_elements": _FALLBACK_ELEMENTS,
+        "approved_elements": _FALLBACK_ELEMENTS,
+        "generated_images": {
+            "现代沙发": "file://test_sofa.jpg",
+            "艺术落地灯": "file://test_lamp.jpg",
+            "装饰画": "file://test_art.jpg",
+        },
+        "layout_text": "## 现代客厅设计方案\n1. 现代沙发\n   放置于客厅中央，搭配浅色地毯与茶几。\n2. 艺术落地灯\n   置于沙发侧旁，提供柔和氛围照明。\n3. 装饰画\n   悬挂于沙发上方墙面，作为空间视觉焦点。",
+    },
+    "input_only": {
+        # 仅提供输入，不提供任何中间结果或输出。
+        # 这会让 analyzer / review / generate_images / generate_layout_text
+        # 全部走真实逻辑，适合做端到端联调。
+        "input_prompt": "请为我设计一个现代轻奢风格的客厅方案，包含主要家具、照明和墙面装饰。",
+    },
+    "partial_elements": {
+        "extracted_elements": [
+            {
+                "item_name": "北欧风餐桌",
+                "image_prompt": "A Scandinavian dining table, light wood, minimalist design, isolated on white background",
+                "layout_desc": "放置于餐厅中央，与开放厨房相邻。",
+            }
+        ],
+        "approved_elements": None,  # 将触发 human_review 节点
+        "generated_images": {},
+    },
+}
+
+
+def _get_test_case(test_case_key: str) -> Dict[str, Any]:
+    """获取指定测试样例的完整 state 覆盖数据。
+
+    Args:
+        test_case_key: 样例键名，如 "default"、"input_only" 或 "partial_elements"
+
+    Returns:
+        该样例对应的 state 覆盖字段字典（可能包含 input_prompt、
+        extracted_elements、approved_elements、generated_images、layout_text 等）。
+        如果样例不存在，返回空字典。
+    """
+    case_data = _TEST_CASE_DATA.get(test_case_key or "default", {})
+    logger.info(
+        f"[MultiScene][test_case] Loaded test case: {test_case_key or 'default'}, "
+        f"fields={list(case_data.keys())}"
+    )
+    return dict(case_data)
+
+
+# ---------------------------------------------------------------------------
+# 节点格式化器（Formatters）— 将业务数据转换为前端 parts
+# ---------------------------------------------------------------------------
+
+# 不产生对话输出的节点使用空 formatter，仅借助装饰器做 error/awaiting_review 拦截。
+_NO_OUTPUT: FormatterFunc = lambda _data, _state: []
+
+
+def _format_aggregate_parts(
+    data: Dict[str, Any],
+    state: "MultiSceneWorkflowState",
+) -> List[Dict[str, Any]]:
+    """将聚合结果格式化为完整的设计方案 parts（标题 + 逐元素文字/图片）。"""
+    approved = state.get("approved_elements", [])
+    if not approved:
+        return []
+
+    generated_images: Dict[str, str] = state.get("generated_images", {})
+
+    parts: List[Dict[str, Any]] = [
+        {
+            "content_type": "text",
+            "content_text": "## 设计方案",
+            "content_url": "",
+            "parameter": {},
+        }
+    ]
+
+    for idx, e in enumerate(approved, 1):
+        name = e.get("item_name", "未命名")
+        desc = e.get("layout_desc", "")
+
+        text_lines = [f"### {idx}. {name}"]
+        if desc:
+            text_lines.append(desc)
+        parts.append(
+            {
+                "content_type": "text",
+                "content_text": "\n".join(text_lines),
+                "content_url": "",
+                "parameter": {},
+            }
+        )
+
+        img_url = generated_images.get(name, "")
+        if img_url:
+            parts.append(
+                {
+                    "content_type": "image",
+                    "content_text": "",
+                    "content_url": _to_display_url(img_url),
+                    "parameter": {},
+                }
+            )
+
+    return parts
+
+
+# ---------------------------------------------------------------------------
 # Node 1: analyzer_node — 结构化方案抽取
 # ---------------------------------------------------------------------------
 
@@ -238,92 +324,23 @@ _VLM_ANALYSIS_PROMPT = (
 def _analyze_images_with_vlm(images: List[str], session_id: str = "") -> str:
     """通过项目 Omni 模块调用 VLM 对图片进行视觉分析。
 
+    图片 URL 的归一化（fileid / file:// / 本地路径 / http 转 data URI）
+    由 Omni 模块内部统一处理，此处直接透传原始 URL 列表。
+
     Returns:
         VLM 返回的文本分析结果；调用失败时返回空字符串。
     """
+    valid_images = [u for u in images if (u or "").strip()]
+    if not valid_images:
+        logger.warning("[Workflow][analyzer] 无可用图片传给 VLM")
+        return ""
+
     try:
-        from ai_media_resource import get_media_registry
-
-        normalized_images: List[str] = []
-        src_stats = {
-            "fileid": 0,
-            "file": 0,
-            "local": 0,
-            "http": 0,
-            "data": 0,
-            "other": 0,
-        }
-
-        for raw in images:
-            u = str(raw or "").strip()
-            if not u:
-                continue
-
-            if u.startswith("data:"):
-                src_stats["data"] += 1
-                normalized_images.append(u)
-                continue
-
-            if u.startswith(FILEID_SCHEME):
-                src_stats["fileid"] += 1
-                u = str(get_media_registry().resolve(u[len(FILEID_SCHEME):]))
-
-            if u.startswith("file://"):
-                src_stats["file"] += 1
-                from ai_models.utils import file_url_to_data_uri
-
-                normalized_images.append(file_url_to_data_uri(u))
-                continue
-
-            p = Path(u)
-            if p.exists():
-                src_stats["local"] += 1
-                from ai_models.utils import file_url_to_data_uri
-
-                normalized_images.append(file_url_to_data_uri(p.resolve().as_uri()))
-                continue
-
-            if u.startswith(("http://", "https://")):
-                src_stats["http"] += 1
-                # 兜底：下载后转 data URI，避免上游 VLM 拉取远端 URL 失败。
-                with httpx.Client(timeout=30.0, follow_redirects=True) as c:
-                    r = c.get(u)
-                    r.raise_for_status()
-                    mime = (
-                        r.headers.get("content-type", "").split(";")[0].strip().lower()
-                    )
-                    if not mime.startswith("image/"):
-                        raise ValueError(
-                            f"VLM 输入不是图片: {u[:120]}, content-type={mime}"
-                        )
-                    b64 = base64.b64encode(r.content).decode("utf-8")
-                    normalized_images.append(f"data:{mime};base64,{b64}")
-                continue
-
-            src_stats["other"] += 1
-            logger.warning(
-                f"[Workflow][analyzer] 无法识别的图片输入，已跳过: {u[:160]}"
-            )
-
-        logger.info(
-            "[Workflow][analyzer] image source stats: fileid=%s file=%s local=%s http=%s data=%s other=%s",
-            src_stats["fileid"],
-            src_stats["file"],
-            src_stats["local"],
-            src_stats["http"],
-            src_stats["data"],
-            src_stats["other"],
-        )
-
-        if not normalized_images:
-            logger.warning("[Workflow][analyzer] 无可用图片传给 VLM")
-            return ""
-
         pool_registry = get_pool_registry()
         request = OmniRequest(
             session_id=session_id or f"workflow-{int(time.time())}",
             prompt=_VLM_ANALYSIS_PROMPT,
-            image_urls=normalized_images,
+            image_urls=valid_images,
         )
         task = pool_registry.create_task(MediaCategory.OMNI, request)
         if task is None:
@@ -339,19 +356,34 @@ def _analyze_images_with_vlm(images: List[str], session_id: str = "") -> str:
         return ""
 
 
-def analyzer_node(state: WorkflowState) -> Dict[str, Any]:
+@stream_output_node("integrated", _NO_OUTPUT)
+def analyzer_node(state: MultiSceneWorkflowState) -> Dict[str, Any]:
     """分析用户需求，提取结构化设计元素列表（extracted_elements）。
 
     多模态输入时通过 Omni 模块（VLM）先对图片做视觉分析，
     再将分析结果与用户文本需求一起传入文本 LLM 提取结构化元素。
     VLM 不可用时降级为纯文本分析。
+
+    在工作流内置测试模式下，直接从本地测试样例中读取元素数据。
     """
-    if state.get("error"):
-        logger.warning(f"[Workflow][analyzer] 上游错误，跳过: {state.get('error')}")
-        return {}
+    # 工作流内置测试模式：直接使用样例数据，跳过真实分析
+    metadata = state.get("metadata", {})
+    if metadata.get("workflow_test"):
+        test_case_key = metadata.get("workflow_test_case", "default")
+        test_data = _get_test_case(test_case_key)
+        extracted = test_data.get("extracted_elements")
+        if extracted:
+            logger.info(
+                "[Workflow][analyzer][TEST] 工作流测试模式，使用预定义样例: "
+                f"test_case={test_case_key}, elements={len(extracted)}"
+            )
+            return {
+                "is_multimodal": bool(state.get("images")),
+                "extracted_elements": extracted,
+            }
 
     # 审核提交后的续跑：直接复用已确认元素，跳过 analyzer。
-    if state.get("metadata", {}).get("resume_from_review"):
+    if metadata.get("resume_from_review"):
         resumed_elements = state.get("approved_elements", []) or state.get(
             "extracted_elements", []
         )
@@ -365,7 +397,13 @@ def analyzer_node(state: WorkflowState) -> Dict[str, Any]:
                 "extracted_elements": resumed_elements,
             }
 
-    user_input = (state.get("prompt") or "").strip()
+    test_prompt = ""
+    if metadata.get("workflow_test"):
+        test_case_key = metadata.get("workflow_test_case", "default")
+        test_data = _get_test_case(test_case_key)
+        test_prompt = str(test_data.get("input_prompt", "") or "").strip()
+
+    user_input = (state.get("prompt") or "").strip() or test_prompt
     if not user_input:
         return {"error": "缺少设计需求文本"}
 
@@ -447,39 +485,32 @@ def analyzer_node(state: WorkflowState) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _build_review_output(
-    elements: List[Dict[str, str]],
-    batch_id: str | None = None,
+def _format_human_review_parts(
+    data: Dict[str, Any],
+    _state: MultiSceneWorkflowState,
 ) -> List[Dict[str, Any]]:
-    """构造 output_llm_content，包含 content_type='review' 的审核 part。"""
-    bid = batch_id or str(uuid.uuid4())
-    review_part = {
-        "content_type": "review",
-        "content_text": "请确认以下设计方案，可编辑后提交。",
-        "content_url": "",
-        "parameter": {
-            "review": {
-                "stage": "pending",
-                "batch_id": bid,
-                "schema_version": 1,
-                "items": elements,
-            }
-        },
-    }
+    """将审核业务数据格式化为前端 review part。"""
+    payload = data.get("review_payload")
+    if not isinstance(payload, dict):
+        return []
+
     return [
         {
-            "role": "assistant",
-            "interface_type": "integrated",
-            "sent_time_stamp": int(time.time()),
-            "part": [review_part],
+            "content_type": "review",
+            "content_text": "请确认以下设计方案，可编辑后提交。",
+            "content_url": "",
+            "parameter": {
+                "review": payload,
+            },
         }
     ]
 
 
-def human_review_node(state: WorkflowState) -> Dict[str, Any]:
+@stream_output_node("integrated", _format_human_review_parts)
+def human_review_node(state: MultiSceneWorkflowState) -> Dict[str, Any]:
     """Human-in-the-loop 审核节点。
 
-    通过 output_llm_content 输出 content_type='review' 的审核块，
+    通过 dialogue_entries 输出 content_type='review' 的审核块，
     checkpoint 流式机制会将其 yield 给前端。前端展示审核 UI 后提交
     修改后的 items，workflow_bridge 负责回填 approved_elements 并
     恢复工作流。
@@ -488,12 +519,33 @@ def human_review_node(state: WorkflowState) -> Dict[str, Any]:
     - 支持 interrupt 的环境：等待人工审核结果后继续。
     - 不支持 interrupt 的环境：仅下发待审核内容并标记 awaiting_review。
     """
-    if state.get("error"):
-        logger.warning(f"[Workflow][human_review] 上游错误，跳过: {state.get('error')}")
-        return {}
+    metadata = state.get("metadata", {})
+
+    # 工作流内置测试模式：若样例中有 approved_elements，直接跳过审核
+    if metadata.get("workflow_test"):
+        test_case_key = metadata.get("workflow_test_case", "default")
+        test_data = _get_test_case(test_case_key)
+        approved = test_data.get("approved_elements")
+        if approved:
+            logger.info(
+                "[Workflow][human_review][TEST] 工作流测试模式，使用预定义 approved_elements: "
+                f"test_case={test_case_key}, count={len(approved)}"
+            )
+            return {
+                "approved_elements": approved,
+                "intermediate": {
+                    **state.get("intermediate", {}),
+                    "human_review": {
+                        "status": "test_approved",
+                        "batch_id": "test_batch",
+                        "elements": approved,
+                        "note": "工作流测试模式，使用预定义元素。",
+                    },
+                },
+            }
 
     # 审核提交后的续跑：直接使用已确认元素，不再次触发审核。
-    if state.get("metadata", {}).get("resume_from_review"):
+    if metadata.get("resume_from_review"):
         resumed_approved = state.get("approved_elements", [])
         if resumed_approved:
             logger.info(
@@ -520,19 +572,25 @@ def human_review_node(state: WorkflowState) -> Dict[str, Any]:
         return {"error": "无可审核的设计元素"}
 
     batch_id = str(uuid.uuid4())
-    review_content = _build_review_output(extracted, batch_id)
+    review_payload = {
+        "stage": "pending",
+        "review_type": "design_elements",
+        "batch_id": batch_id,
+        "schema_version": 1,
+        "items": extracted,
+    }
 
     # --- 优先走 LangGraph interrupt（真正的 HITL）---
     try:
         from langgraph.types import interrupt  # type: ignore[import-untyped]
 
-        review_payload = {
+        interrupt_payload = {
             "action": "review_elements",
             "elements": extracted,
             "batch_id": batch_id,
             "message": "请审核以下设计元素，可修改后返回，或原样返回表示通过。",
         }
-        approved = interrupt(review_payload)
+        approved = interrupt(interrupt_payload)
 
         if isinstance(approved, list) and len(approved) > 0:
             logger.info(
@@ -540,7 +598,6 @@ def human_review_node(state: WorkflowState) -> Dict[str, Any]:
             )
             return {
                 "approved_elements": approved,
-                "output_llm_content": review_content,
                 "intermediate": {
                     **state.get("intermediate", {}),
                     "human_review": {
@@ -560,7 +617,7 @@ def human_review_node(state: WorkflowState) -> Dict[str, Any]:
         f"[Workflow][human_review] 已发送待审核内容，元素数量: {len(extracted)}, batch_id={batch_id}"
     )
     return {
-        "output_llm_content": review_content,
+        "review_payload": review_payload,
         "awaiting_review": True,
         "intermediate": {
             **state.get("intermediate", {}),
@@ -579,21 +636,28 @@ def human_review_node(state: WorkflowState) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def generate_images_node(state: WorkflowState) -> Dict[str, Any]:
+@stream_output_node("integrated", _NO_OUTPUT)
+def generate_images_node(state: MultiSceneWorkflowState) -> Dict[str, Any]:
     """并发生成所有审核通过元素的图片。
 
     使用 ThreadPoolExecutor 并行调用图片生成工具。
     单项失败仅跳过该项并记录日志，不抛出致命异常。
-    """
-    if state.get("error"):
-        logger.warning(
-            f"[Workflow][generate_images] 上游错误，跳过: {state.get('error')}"
-        )
-        return {}
 
-    if state.get("awaiting_review"):
-        logger.info("[Workflow][generate_images] 等待审核提交，暂不执行图片生成")
-        return {}
+    在工作流内置测试模式下，如果样例中已提供 generated_images，直接返回。
+    """
+    metadata = state.get("metadata", {})
+
+    # 工作流内置测试模式：若样例中有 generated_images，直接返回
+    if metadata.get("workflow_test"):
+        test_case_key = metadata.get("workflow_test_case", "default")
+        test_data = _get_test_case(test_case_key)
+        generated_images = test_data.get("generated_images")
+        if isinstance(generated_images, dict) and generated_images:
+            logger.info(
+                "[Workflow][generate_images][TEST] 工作流测试模式，使用预定义 generated_images: "
+                f"test_case={test_case_key}, count={len(generated_images)}"
+            )
+            return {"generated_images": generated_images}
 
     approved = state.get("approved_elements", [])
     if not approved:
@@ -643,20 +707,27 @@ def generate_images_node(state: WorkflowState) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def generate_layout_text_node(state: WorkflowState) -> Dict[str, Any]:
+@stream_output_node("integrated", _NO_OUTPUT)
+def generate_layout_text_node(state: MultiSceneWorkflowState) -> Dict[str, Any]:
     """将审核通过的元素格式化为物品清单与布局描述文本。
 
     不调用 LLM，仅对已有的 item_name / layout_desc 做格式化。
-    """
-    if state.get("error"):
-        logger.warning(
-            f"[Workflow][generate_layout_text] 上游错误，跳过: {state.get('error')}"
-        )
-        return {}
 
-    if state.get("awaiting_review"):
-        logger.info("[Workflow][generate_layout_text] 等待审核提交，暂不执行文案生成")
-        return {}
+    在工作流内置测试模式下，如果样例中已提供 layout_text，直接返回。
+    """
+    metadata = state.get("metadata", {})
+
+    # 工作流内置测试模式：若样例中有 layout_text，直接返回
+    if metadata.get("workflow_test"):
+        test_case_key = metadata.get("workflow_test_case", "default")
+        test_data = _get_test_case(test_case_key)
+        layout_text = test_data.get("layout_text")
+        if layout_text:
+            logger.info(
+                "[Workflow][generate_layout_text][TEST] 工作流测试模式，使用预定义 layout_text: "
+                f"test_case={test_case_key}"
+            )
+            return {"layout_text": layout_text}
 
     approved = state.get("approved_elements", [])
     if not approved:
@@ -680,119 +751,34 @@ def generate_layout_text_node(state: WorkflowState) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def aggregate_result_node(state: WorkflowState) -> Dict[str, Any]:
-    """汇总物品清单、布局描述与生成图片，输出 Markdown 格式的 output_llm_content。
+@stream_output_node("integrated", _format_aggregate_parts)
+def aggregate_result_node(state: MultiSceneWorkflowState) -> Dict[str, Any]:
+    """汇总物品清单、布局描述与生成图片，写入 global_assets。
 
-    错误线程：若中间节点设置了 error，将其传回作为最终结果。
+    完整的逐元素输出（标题 + 文字描述 + 图片）由 formatter 负责生成并
+    自动追加到 dialogue_entries，本节点只负责返回业务数据。
     """
-    # --- 检查错误状态 ---
-    if state.get("error"):
-        error_msg = state.get("error", "工作流执行异常")
-        logger.error(f"[Workflow][aggregate] 流程中断，错误: {error_msg}")
-        output_content = _build_llm_content(
-            [f"❌ **设计方案生成失败**\n\n错误信息: {error_msg}"]
-        )
-        return {
-            "output_llm_content": output_content,
-            "intermediate": {
-                **state.get("intermediate", {}),
-                "workflow": "integrated_multi_scene",
-                "status": "failed",
-                "error": error_msg,
-            },
-        }
-
-    if state.get("awaiting_review"):
-        logger.info("[Workflow][aggregate] 等待审核提交，暂不输出聚合结果")
-        return {
-            "intermediate": {
-                **state.get("intermediate", {}),
-                "workflow": "integrated_multi_scene",
-                "status": "pending_review",
-            }
-        }
-
     generated_images: Dict[str, str] = state.get("generated_images", {})
     approved = state.get("approved_elements", [])
 
-    # --- 检查空数据 ---
     if not approved:
-        logger.warning("[Workflow][aggregate] 无设计元素可聚合")
-        output_content = _build_llm_content(
-            ["❌ **设计方案为空**\n\n未能提取到任何设计元素，请检查输入。"]
-        )
-        return {
-            "output_llm_content": output_content,
-            "intermediate": {
-                **state.get("intermediate", {}),
-                "workflow": "integrated_multi_scene",
-                "status": "empty",
-                "element_count": 0,
-                "image_success_count": 0,
-            },
-        }
-
-    # --- 正常聚合 ---
-    # 每个元素拆分为独立的 text part + image part，避免图片 URL 混入文本
-    parts: List[Dict[str, Any]] = [
-        {
-            "content_type": "text",
-            "content_text": "## 设计方案",
-            "content_url": "",
-            "parameter": {},
-        }
-    ]
-
-    for idx, e in enumerate(approved, 1):
-        name = e.get("item_name", "未命名")
-        desc = e.get("layout_desc", "")
-
-        # 文本 part：标题 + 布局描述
-        text_lines = [f"### {idx}. {name}"]
-        if desc:
-            text_lines.append(desc)
-        parts.append({
-            "content_type": "text",
-            "content_text": "\n".join(text_lines),
-            "content_url": "",
-            "parameter": {},
-        })
-
-        # 图片 part：独立输出，不嵌入文本
-        img_url = generated_images.get(name, "")
-        if img_url:
-            parts.append({
-                "content_type": "image",
-                "content_text": "",
-                "content_url": _to_display_url(img_url),
-                "parameter": {},
-            })
-
-    output_content = [
-        {
-            "role": "assistant",
-            "interface_type": "integrated",
-            "sent_time_stamp": int(time.time()),
-            "part": parts,
-        }
-    ]
-
-    intermediate = {
-        **state.get("intermediate", {}),
-        "workflow": "integrated_multi_scene",
-        "status": "success",
-        "element_count": len(approved),
-        "image_success_count": len(generated_images),
-    }
+        logger.warning("[Workflow][aggregate] 无设计元素，跳过聚合")
+        return {}
 
     logger.info(
-        f"[Workflow][aggregate] 完成：{len(approved)} 个元素，"
-        f"{len(generated_images)} 张图片成功"
+        "[Workflow][aggregate] 完成：%s 个元素，%s 张图片成功",
+        len(approved),
+        len(generated_images),
     )
 
     return {
-        "output_llm_content": output_content,
-        "intermediate": intermediate,
+        "global_assets": {
+            "multi_scene": {
+                "approved_elements": approved,
+                "generated_images": generated_images,
+                "layout_text": state.get("layout_text", ""),
+            }
+        },
     }
 
 
@@ -808,7 +794,7 @@ def build_multi_scene_workflow() -> "CompiledStateGraph":
         START → analyzer → human_review ─→ generate_images       ─┐
                                          └→ generate_layout_text ─┤→ aggregate_result → END
     """
-    graph = StateGraph(WorkflowState)
+    graph = StateGraph(MultiSceneWorkflowState)
 
     # 注册节点
     graph.add_node("analyzer", analyzer_node)

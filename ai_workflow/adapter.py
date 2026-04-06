@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 from typing import Any, Dict, List, Optional
 
 from ai_workflow.state import (
     WorkflowState,
     create_initial_state,
+    deep_merge_dict,
 )
+from ai_workflow.loop_state import get_loop_global_assets
 from ai_tools.common import (
     ensure_dict,
     extract_parameter,
@@ -31,6 +34,88 @@ from ai_tools.common import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_bool(value: Any) -> bool:
+    """将常见字符串/数值安全转换为布尔值。"""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", ""}:
+            return False
+    return bool(value)
+
+
+def _extract_inline_workflow_test_options(prompt: str) -> tuple[str, Dict[str, Any]]:
+    """从纯文本 prompt 中提取工作流测试标记。
+
+    支持示例：
+    - --test
+    - --workflow-test
+    - --case default
+    - --case=default
+    - --persist
+    - --persist-to-loop-state
+    """
+    stripped = (prompt or "").strip()
+    if not stripped:
+        return "", {}
+
+    try:
+        tokens = shlex.split(stripped)
+    except ValueError:
+        tokens = stripped.split()
+
+    if not tokens:
+        return stripped, {}
+
+    options: Dict[str, Any] = {}
+    remaining_tokens: List[str] = []
+    index = 0
+
+    while index < len(tokens):
+        token = tokens[index]
+
+        if token in {"--test", "--workflow-test", "--wt"}:
+            options["workflow_test"] = True
+            index += 1
+            continue
+
+        if token in {"--persist", "--persist-to-loop-state"}:
+            options["persist_to_loop_state"] = True
+            index += 1
+            continue
+
+        if token in {"--no-persist", "--no-persist-to-loop-state"}:
+            options["persist_to_loop_state"] = False
+            index += 1
+            continue
+
+        if token.startswith("--case=") or token.startswith("--workflow-test-case="):
+            _, value = token.split("=", 1)
+            if value:
+                options["workflow_test_case"] = value
+            index += 1
+            continue
+
+        if token in {"--case", "--workflow-test-case"}:
+            next_index = index + 1
+            if next_index < len(tokens):
+                options["workflow_test_case"] = tokens[next_index]
+                index += 2
+                continue
+
+        remaining_tokens.append(token)
+        index += 1
+
+    return " ".join(remaining_tokens).strip(), options
 
 
 def parse_request(request_data: Any) -> WorkflowState:
@@ -66,6 +151,7 @@ def parse_request(request_data: Any) -> WorkflowState:
 
     # 提取 prompt（从 text 类型的 part 中获取）
     prompt = _extract_prompt(data)
+    prompt, inline_test_options = _extract_inline_workflow_test_options(prompt)
 
     # 提取 images 和对应的 bounding_box（建立一一对应关系）
     images, bounding_box = _extract_images_with_bboxes(data)
@@ -88,8 +174,14 @@ def parse_request(request_data: Any) -> WorkflowState:
         metadata=metadata,
     )
 
+    # 基础状态补充
+    state["raw_user_input"] = prompt
+    state["current_instruction"] = prompt
+
     # 审核提交后的续跑字段（用于跳过 analyzer/human_review）
-    resume_from_review = bool(extract_parameter(data, "resume_from_review", False))
+    resume_from_review = _coerce_bool(
+        extract_parameter(data, "resume_from_review", False)
+    )
     resume_batch_id = extract_parameter(data, "resume_batch_id", "")
     resume_items = extract_parameter(data, "resume_approved_elements", None)
 
@@ -101,6 +193,64 @@ def parse_request(request_data: Any) -> WorkflowState:
             "resume_from_review": True,
             "resume_batch_id": resume_batch_id,
         }
+
+    # 全局状态审核提交后的续跑字段
+    resume_global_state_review = _coerce_bool(
+        extract_parameter(data, "resume_global_state_review", False)
+    )
+    resume_global_assets = extract_parameter(data, "resume_global_assets", {})
+    if resume_global_state_review:
+        state["metadata"] = {
+            **state.get("metadata", {}),
+            "resume_global_state_review": True,
+            "resume_batch_id": extract_parameter(data, "resume_batch_id", ""),
+        }
+        if isinstance(resume_global_assets, dict):
+            state["metadata"]["resume_global_assets"] = resume_global_assets
+
+    # 从循环状态注入已积累的 global_assets
+    loop_assets = get_loop_global_assets(str(session_id))
+    if loop_assets:
+        state["global_assets"] = deep_merge_dict(
+            state.get("global_assets", {}), loop_assets
+        )
+
+    # 工作流内置测试输入模式：轻量级控制参数
+    # 仅标记是否启用测试模式、使用哪个样例、以及是否回写 loop_state。
+    # 具体测试内容由各工作流文件内置编码提供。
+    workflow_test_param = extract_parameter(data, "workflow_test", None)
+    workflow_test_case_param = extract_parameter(data, "workflow_test_case", None)
+    persist_to_loop_state_param = extract_parameter(data, "persist_to_loop_state", None)
+
+    workflow_test = (
+        _coerce_bool(workflow_test_param)
+        if workflow_test_param is not None
+        else _coerce_bool(inline_test_options.get("workflow_test", False))
+    )
+    workflow_test_case = (
+        workflow_test_case_param
+        if workflow_test_case_param not in (None, "")
+        else inline_test_options.get("workflow_test_case")
+    )
+    persist_to_loop_state = (
+        _coerce_bool(persist_to_loop_state_param)
+        if persist_to_loop_state_param is not None
+        else _coerce_bool(inline_test_options.get("persist_to_loop_state", False))
+    )
+
+    if workflow_test:
+        state["metadata"] = {
+            **state.get("metadata", {}),
+            "workflow_test": True,
+            "workflow_test_case": workflow_test_case or "default",
+            "persist_to_loop_state": persist_to_loop_state,
+        }
+        logger.info(
+            f"Workflow test mode enabled: session={session_id}, "
+            f"function_id={function_id}, "
+            f"test_case={workflow_test_case or 'default'}, "
+            f"persist_to_loop_state={persist_to_loop_state}"
+        )
 
     return state
 
@@ -231,7 +381,7 @@ def format_response(
             metadata=metadata,
         )
 
-    llm_content = state.get("output_llm_content", [])
+    llm_content = state.get("dialogue_entries", [])
     if llm_content:
         return build_success_response(
             interface_type=interface_type,
