@@ -34,4 +34,3 @@ bitsandbytes
 accelerate
 sqlite-vec
 numpy
-qwen-vl-utils

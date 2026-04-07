@@ -117,19 +117,6 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     )
 
     # -----------------------------------------------------------------------
-    # 模型导入工具（MCP）
-    # -----------------------------------------------------------------------
-
-    from ai_modules.mcp.tools.model_import_tools import load_model_import_tools
-    registry.register_loader(
-        loader=load_model_import_tools,
-        category=ToolCategory.SCENE,
-        dependencies=[],
-        requires_config=False,
-        source="tools.mcp.model_import",
-    )
-
-    # -----------------------------------------------------------------------
     # 图像生成工具
     # -----------------------------------------------------------------------
     from ai_modules.image_generate.tools.image_tools import load_image_tools

@@ -406,11 +406,6 @@ def _build_camera_screenshot_tool(scene_manager) -> StructuredTool:
                     _get_screenshot_dir(), f"shot_{output_mode}_{ts}.png"
                 )
             else:
-                # 相对路径统一放到项目截图目录下
-                if not os.path.isabs(output_path):
-                    output_path = os.path.join(
-                        _get_screenshot_dir(), output_path
-                    )
                 os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
             camera.save_screenshot(output_path)
@@ -512,8 +507,6 @@ def _build_camera_multiview_tool(scene_manager) -> StructuredTool:
                     _get_screenshot_dir(),
                     f"multiview_{actor_name}_{ts}",
                 )
-            elif not os.path.isabs(output_dir):
-                output_dir = os.path.join(_get_screenshot_dir(), output_dir)
             os.makedirs(output_dir, exist_ok=True)
 
             up = camera.get_world_up()
