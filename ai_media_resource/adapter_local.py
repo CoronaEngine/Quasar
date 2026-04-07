@@ -34,19 +34,23 @@ class LocalStorageAdapter(StorageAdapter):
     """
 
     def __init__(self):
-        self.save_path = self._resolve_save_path()
-        self.save_path.mkdir(parents=True, exist_ok=True)
+        pass
+
+    @property
+    def save_path(self) -> Path:
+        """每次访问时动态解析存储路径，确保跟随当前活跃项目。"""
+        return self._resolve_save_path()
 
     def _resolve_save_path(self) -> Path:
-        """解析本地存储路径：优先使用 paths_config 中的配置，未配置时自动推算"""
+        """解析本地存储路径：优先使用项目路径下的 media/ 目录，未配置时自动推算"""
         try:
-            from config.app_config import get_app_config
-            configured = get_app_config().paths.media_local_storage
-            if configured is not None:
-                return Path(configured)
+            from config.paths_config import get_project_media_dir
+            return get_project_media_dir()
         except Exception:
             pass
-        return Path(__file__).parent.parent / "local_storage"
+        fallback = Path(__file__).parent.parent / "local_storage"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
 
     def save_from_url(
         self,

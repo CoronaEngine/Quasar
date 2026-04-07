@@ -366,11 +366,8 @@ def _build_camera_list_tool(scene_manager) -> StructuredTool:
 
 def _get_screenshot_dir():
     """获取截图输出基础目录"""
-    from CoronaCore.core.corona_editor import CoronaEditor
-    base = CoronaEditor.CoronaEngine.active_project_path or os.getcwd()
-    d = os.path.join(base, "screenshots")
-    os.makedirs(d, exist_ok=True)
-    return d
+    from config.paths_config import get_project_screenshots_dir
+    return str(get_project_screenshots_dir())
 
 
 def _build_camera_screenshot_tool(scene_manager) -> StructuredTool:

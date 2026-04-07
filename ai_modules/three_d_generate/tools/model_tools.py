@@ -19,6 +19,7 @@ from ai_tools.response_adapter import (
     build_error_result,
 )
 from config.app_config import get_app_config
+from config.paths_config import get_project_models_dir, _get_active_project_path
 from ai_modules.three_d_generate.tools.client_3d import Rodin3DClient
 
 import re
@@ -241,8 +242,6 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
     poll_timeout = threed_config.poll_timeout
 
     app_paths = get_app_config().paths
-    repo_root = app_paths.repo_root.resolve()
-    assets_model_root = app_paths.assets_model_dir.resolve()
 
     media_registry = get_media_registry()
 
@@ -339,6 +338,10 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
     ) -> str:
         logger = logging.getLogger(__name__)
         try:
+            # 每次调用时动态获取项目路径，确保跟随当前活跃项目
+            repo_root = _get_active_project_path().resolve()
+            assets_model_root = get_project_models_dir().resolve()
+
             mode = (mode or "").strip()
 
             # 解析 fileid:// -> http(s) url

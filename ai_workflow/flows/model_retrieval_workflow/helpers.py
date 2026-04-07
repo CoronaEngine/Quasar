@@ -10,6 +10,7 @@ import numpy as np
 from ai_config.ai_config import get_ai_config
 from ai_tools.registry import get_tool_registry
 from config.app_config import get_app_config
+from config.paths_config import get_project_recognition_db
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ def get_recognition_db_config() -> Dict[str, Any]:
     cfg = get_ai_config()
     raw = getattr(cfg, "object_recognition", None)
 
-    db_path = str(get_app_config().paths.object_recognition_db)
+    db_path = str(get_project_recognition_db())
     vector_dim = 1024
 
     if isinstance(raw, dict):
