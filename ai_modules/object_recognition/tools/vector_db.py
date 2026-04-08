@@ -351,8 +351,8 @@ class VectorDB:
             FROM object_vectors v
             JOIN object_metadata m ON m.id = v.object_rowid
             WHERE v.embedding MATCH ?
-            AND k = ?
             ORDER BY v.distance
+            LIMIT ?
             """,
             (vec_str, top_k),
         ).fetchall()

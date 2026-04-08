@@ -11,7 +11,7 @@ import numpy as np
 from ai_config.ai_config import get_ai_config
 from ai_tools.registry import get_tool_registry
 from ai_tools.response_adapter import FILEID_SCHEME
-from config.paths_config import _get_active_project_path, get_project_recognition_db
+from ai_config.paths_config import _get_active_project_path, get_project_recognition_db
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ def get_tool(name: str) -> Any:
 
 def get_search_tool():
     """获取物体搜索工具。"""
-    return None  # TEMP: 临时屏蔽嵌入模型，跳过检索阶段
+    # return None  # TEMP: 临时屏蔽嵌入模型，跳过检索阶段
     return get_tool("search_similar_object")
 
 
@@ -279,7 +279,7 @@ def build_placeholder_embedding(
 
 def get_embedding_client():
     """获取 Qwen3-VL-Embedding 客户端单例，按需从配置初始化。"""
-    return None  # TEMP: 临时屏蔽嵌入模型，注册阶段将降级为占位向量
+    # return None  # TEMP: 临时屏蔽嵌入模型，注册阶段将降级为占位向量
     from ai_modules.object_recognition.configs.dataclasses import (
         EmbeddingModelConfig,
         RecognitionConfig,

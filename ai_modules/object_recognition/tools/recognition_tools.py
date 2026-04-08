@@ -19,12 +19,12 @@ from ai_tools.response_adapter import (
     build_success_result,
     build_error_result,
 )
-from ai_modules.object_recognition.configs.dataclasses import (
+from ..configs.dataclasses import (
     EmbeddingModelConfig,
     VectorDBConfig,
     RecognitionConfig,
 )
-from ai_modules.object_recognition.configs.prompts import (
+from ..configs.prompts import (
     STORE_OBJECT_PROMPTS,
     SEARCH_OBJECT_PROMPTS,
 )
@@ -101,10 +101,10 @@ def load_recognition_tools(config: AIConfig) -> List[Any]:
         )
 
     # 延迟导入，避免在模块未启用时加载重型依赖
-    from ai_modules.object_recognition.tools.client_embedding import (
+    from .client_embedding import (
         get_embedding_client,
     )
-    from ai_modules.object_recognition.tools.vector_db import VectorDB
+    from .vector_db import VectorDB
 
     # 初始化嵌入客户端和向量数据库
     embedding_client = get_embedding_client(recognition_cfg.embedding)
@@ -123,7 +123,7 @@ def load_recognition_tools(config: AIConfig) -> List[Any]:
     # ── 目录自动扫描（模块加载时执行一次） ──────────────────────────
     if recognition_cfg.auto_scan_dir:
         try:
-            from ai_modules.object_recognition.tools.auto_scan import (
+            from .auto_scan import (
                 scan_and_register,
             )
 

@@ -22,7 +22,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from ai_modules.object_recognition.configs.dataclasses import EmbeddingModelConfig
+from ..configs.dataclasses import EmbeddingModelConfig
 
 logger = logging.getLogger(__name__)
 

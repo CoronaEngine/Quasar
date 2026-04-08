@@ -366,7 +366,8 @@ def _build_camera_list_tool(scene_manager) -> StructuredTool:
 
 def _get_screenshot_dir():
     """获取截图输出基础目录"""
-    from config.paths_config import get_project_screenshots_dir
+    from ai_config.paths_config import get_project_screenshots_dir
+
     return str(get_project_screenshots_dir())
 
 

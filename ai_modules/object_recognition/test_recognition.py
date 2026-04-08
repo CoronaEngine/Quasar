@@ -7,8 +7,11 @@
   3. 端到端流程：入库 → 搜索
 
 运行方式:
-    cd d:\\CodeLib\\CoronaArtificialIntelligence
+    cd d:/CodeLib/CoronaEngine/editor/CabbageEditor/plugins/AITool/CoronaArtificialIntelligence
     python -m ai_modules.object_recognition.test_recognition
+
+或直接运行:
+    python ai_modules/object_recognition/test_recognition.py
 """
 
 from __future__ import annotations
@@ -18,10 +21,22 @@ import logging
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 import numpy as np
 
+ai_root = Path(__file__).resolve().parents[2]
+editor_root = Path(__file__).resolve().parents[5]
+for path in (ai_root, editor_root):
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
+
+if __package__ in (None, ""):
+    __package__ = "ai_modules.object_recognition"
+
 logger = logging.getLogger(__name__)
+
 
 def print(*args, **kwargs):
     builtins.print(*args, **kwargs)
@@ -45,7 +60,7 @@ def test_vector_db():
     print("测试 1: 向量数据库 (sqlite-vec)")
     print("=" * 60)
 
-    from ai_modules.object_recognition.tools.vector_db import (
+    from .tools.vector_db import (
         VectorDB,
         normalize_vector,
     )
@@ -153,14 +168,18 @@ def test_embedding_model():
 
     print(f"  PyTorch 版本: {torch.__version__}")
     print(f"  CUDA 可用: {torch.cuda.is_available()}")
+    if not torch.cuda.is_available():
+        print("  跳过: 当前环境无 CUDA GPU，此测试需要 GPU")
+        return
+
     if torch.cuda.is_available():
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
         print(
             f"  显存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB"
         )
 
-    from ai_modules.object_recognition.configs.dataclasses import EmbeddingModelConfig
-    from ai_modules.object_recognition.tools.client_embedding import (
+    from .configs.dataclasses import EmbeddingModelConfig
+    from .tools.client_embedding import (
         Qwen3VLEmbeddingClient,
     )
 
@@ -209,14 +228,20 @@ def test_end_to_end():
     print("测试 3: 端到端流程（入库 → 搜索）")
     print("=" * 60)
 
-    from ai_modules.object_recognition.configs.dataclasses import (
+    import torch
+
+    if not torch.cuda.is_available():
+        print("  跳过: 当前环境无 CUDA GPU，此测试需要 GPU")
+        return
+
+    from .configs.dataclasses import (
         EmbeddingModelConfig,
         VectorDBConfig,
     )
-    from ai_modules.object_recognition.tools.client_embedding import (
+    from .tools.client_embedding import (
         Qwen3VLEmbeddingClient,
     )
-    from ai_modules.object_recognition.tools.vector_db import VectorDB
+    from .tools.vector_db import VectorDB
 
     db_path = os.path.join(tempfile.gettempdir(), "test_e2e_recognition.db")
     if os.path.exists(db_path):
@@ -299,13 +324,12 @@ def test_auto_scan():
 
     import shutil
 
-    from ai_modules.object_recognition.configs.dataclasses import (
-        EmbeddingModelConfig,
+    from .configs.dataclasses import (
         RecognitionConfig,
         VectorDBConfig,
     )
-    from ai_modules.object_recognition.tools.auto_scan import scan_and_register
-    from ai_modules.object_recognition.tools.vector_db import (
+    from .tools.auto_scan import scan_and_register
+    from .tools.vector_db import (
         VectorDB,
         normalize_vector,
     )
@@ -438,7 +462,7 @@ def test_auto_scan():
         auto_scan_embed=True,
         auto_scan_max_images=1,
     )
-    stats_d = scan_and_register(cfg_limit, db, mock_client)
+    print(f"    统计: {scan_and_register(cfg_limit, db, mock_client)}")
     cup = db.get_object("cup_001")
     assert cup is not None
     assert (
@@ -457,6 +481,11 @@ def test_auto_scan():
 #  主入口
 # ====================================================================== #
 if __name__ == "__main__":
+    # 初始化日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
     print("=" * 60)
     print("  物体识别模块 (object_recognition) 测试")
     print("=" * 60)

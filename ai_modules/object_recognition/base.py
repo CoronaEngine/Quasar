@@ -120,7 +120,7 @@ def _handle_object_store_inner(
             description = extract_prompt_from_llm_content(request_data) or ""
 
         # 加载物体识别工具并执行入库
-        from ai_modules.object_recognition.tools.recognition_tools import (
+        from .tools.recognition_tools import (
             load_recognition_tools,
         )
 
@@ -260,7 +260,7 @@ def _handle_object_search_inner(
             top_k = 5
 
         # 加载物体识别工具并执行搜索
-        from ai_modules.object_recognition.tools.recognition_tools import (
+        from .tools.recognition_tools import (
             load_recognition_tools,
         )
 

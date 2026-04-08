@@ -1,14 +1,15 @@
-import os
+import math
+import base64
 import torch
 import torch.nn.functional as F
 import unicodedata
-import numpy as np
 import logging
 
+import requests
 from PIL import Image
-from urllib.parse import urlparse
+from io import BytesIO
 from dataclasses import dataclass
-from typing import Optional, List, Union, Dict, Any
+from typing import Optional, List, Union, Dict, Any, Tuple
 from transformers.models.qwen3_vl.modeling_qwen3_vl import (
     Qwen3VLPreTrainedModel,
     Qwen3VLModel,
@@ -20,8 +21,6 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
 from transformers.cache_utils import Cache
 
-from qwen_vl_utils.vision_process import process_vision_info
-
 logger = logging.getLogger(__name__)
 
 # Constants for configuration
@@ -30,11 +29,8 @@ IMAGE_BASE_FACTOR = 16
 IMAGE_FACTOR = IMAGE_BASE_FACTOR * 2
 MIN_PIXELS = 4 * IMAGE_FACTOR * IMAGE_FACTOR
 MAX_PIXELS = 1800 * IMAGE_FACTOR * IMAGE_FACTOR
-FPS = 1
-MAX_FRAMES = 64
-FRAME_MAX_PIXELS = 768 * IMAGE_FACTOR * IMAGE_FACTOR
-MAX_TOTAL_PIXELS = 10 * FRAME_MAX_PIXELS
-PAD_TOKEN = "<|endoftext|>"
+MAX_RATIO = 200
+SPATIAL_MERGE_SIZE = 2
 
 
 # Define output structure for embeddings
@@ -67,14 +63,6 @@ class Qwen3VLForEmbedding(Qwen3VLPreTrainedModel):
     def get_decoder(self):
         return self.model.get_decoder()
 
-    # Extract video features from model
-    def get_video_features(
-        self,
-        pixel_values_videos: torch.FloatTensor,
-        video_grid_thw: Optional[torch.LongTensor] = None,
-    ):
-        return self.model.get_video_features(pixel_values_videos, video_grid_thw)
-
     # Extract image features from model
     def get_image_features(
         self,
@@ -102,9 +90,7 @@ class Qwen3VLForEmbedding(Qwen3VLPreTrainedModel):
         past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         pixel_values: Optional[torch.Tensor] = None,
-        pixel_values_videos: Optional[torch.FloatTensor] = None,
         image_grid_thw: Optional[torch.LongTensor] = None,
-        video_grid_thw: Optional[torch.LongTensor] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         **kwargs: Unpack[TransformersKwargs],
@@ -113,9 +99,7 @@ class Qwen3VLForEmbedding(Qwen3VLPreTrainedModel):
         outputs = self.model(
             input_ids=input_ids,
             pixel_values=pixel_values,
-            pixel_values_videos=pixel_values_videos,
             image_grid_thw=image_grid_thw,
-            video_grid_thw=video_grid_thw,
             position_ids=position_ids,
             attention_mask=attention_mask,
             past_key_values=past_key_values,
@@ -130,58 +114,146 @@ class Qwen3VLForEmbedding(Qwen3VLPreTrainedModel):
         )
 
 
-def sample_frames(
-    frames: List[Union[str, Image.Image]], max_segments: int
-) -> List[Union[str, Image.Image]]:
-    duration = len(frames)
-    if duration <= max_segments:
-        return frames
-
-    frame_id_array = np.linspace(0, duration - 1, max_segments, dtype=int)
-    frame_id_list = frame_id_array.tolist()
-    sampled_frames = [frames[frame_idx] for frame_idx in frame_id_list]
-    return sampled_frames
+def round_by_factor(number: int, factor: int) -> int:
+    return round(number / factor) * factor
 
 
-def is_image_path(path: str) -> bool:
-    image_extensions = {
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".gif",
-        ".bmp",
-        ".webp",
-        ".tiff",
-        ".svg",
-    }
+def ceil_by_factor(number: int, factor: int) -> int:
+    return math.ceil(number / factor) * factor
 
-    if path.startswith(("http://", "https://")):
-        # Parse URL to remove query parameters
-        parsed_url = urlparse(path)
-        clean_path = parsed_url.path
+
+def floor_by_factor(number: int, factor: int) -> int:
+    return math.floor(number / factor) * factor
+
+
+def smart_resize(
+    height: int,
+    width: int,
+    factor: int,
+    min_pixels: Optional[int] = None,
+    max_pixels: Optional[int] = None,
+) -> Tuple[int, int]:
+    max_pixels = max_pixels if max_pixels is not None else IMAGE_MAX_TOKEN_NUM * factor**2
+    min_pixels = min_pixels if min_pixels is not None else IMAGE_MIN_TOKEN_NUM * factor**2
+    if max_pixels < min_pixels:
+        raise ValueError("max_pixels must be greater than or equal to min_pixels.")
+
+    ratio = max(height, width) / min(height, width)
+    if ratio > MAX_RATIO:
+        raise ValueError(
+            f"absolute aspect ratio must be smaller than {MAX_RATIO}, got {ratio}"
+        )
+
+    h_bar = max(factor, round_by_factor(height, factor))
+    w_bar = max(factor, round_by_factor(width, factor))
+
+    if h_bar * w_bar > max_pixels:
+        beta = math.sqrt((height * width) / max_pixels)
+        h_bar = floor_by_factor(height / beta, factor)
+        w_bar = floor_by_factor(width / beta, factor)
+    elif h_bar * w_bar < min_pixels:
+        beta = math.sqrt(min_pixels / (height * width))
+        h_bar = ceil_by_factor(height * beta, factor)
+        w_bar = ceil_by_factor(width * beta, factor)
+
+    return h_bar, w_bar
+
+
+def to_rgb(pil_image: Image.Image) -> Image.Image:
+    if pil_image.mode == "RGBA":
+        white_background = Image.new("RGB", pil_image.size, (255, 255, 255))
+        white_background.paste(pil_image, mask=pil_image.split()[3])
+        return white_background
+    return pil_image.convert("RGB")
+
+
+def fetch_image(
+    ele: Dict[str, Union[str, Image.Image]], image_patch_size: int = 14
+) -> Image.Image:
+    image = ele.get("image", ele.get("image_url"))
+    if image is None:
+        raise ValueError("image or image_url is required.")
+
+    patch_factor = int(image_patch_size * SPATIAL_MERGE_SIZE)
+    image_obj: Optional[Image.Image] = None
+
+    if isinstance(image, Image.Image):
+        image_obj = image
+    elif isinstance(image, str) and image.startswith(("http://", "https://")):
+        with requests.get(image, stream=True, timeout=30) as response:
+            response.raise_for_status()
+            with BytesIO(response.content) as bio:
+                image_obj = Image.open(bio).copy()
+    elif isinstance(image, str) and image.startswith("file://"):
+        image_obj = Image.open(image[7:])
+    elif isinstance(image, str) and image.startswith("data:image"):
+        if "base64," not in image:
+            raise ValueError("Only base64 data URI images are supported.")
+        _, base64_data = image.split("base64,", 1)
+        data = base64.b64decode(base64_data)
+        with BytesIO(data) as bio:
+            image_obj = Image.open(bio).copy()
+    elif isinstance(image, str):
+        image_obj = Image.open(image)
+
+    if image_obj is None:
+        raise ValueError(
+            "Unrecognized image input, supports local path, http/https, data URI and PIL.Image."
+        )
+
+    image_rgb = to_rgb(image_obj)
+
+    if "resized_height" in ele and "resized_width" in ele:
+        resized_height, resized_width = smart_resize(
+            int(ele["resized_height"]),
+            int(ele["resized_width"]),
+            factor=patch_factor,
+        )
     else:
-        clean_path = path
+        width, height = image_rgb.size
+        resized_height, resized_width = smart_resize(
+            height,
+            width,
+            factor=patch_factor,
+            min_pixels=ele.get("min_pixels"),
+            max_pixels=ele.get("max_pixels"),
+        )
 
-    # Check file extension
-    _, ext = os.path.splitext(clean_path.lower())
-    return ext in image_extensions
+    return image_rgb.resize((resized_width, resized_height))
 
 
-def is_video_input(video) -> bool:
-    if isinstance(video, str):
-        return True
+def process_vision_info(
+    conversations: Union[List[Dict[str, Any]], List[List[Dict[str, Any]]]],
+    image_patch_size: int = 14,
+) -> Optional[List[Image.Image]]:
+    image_inputs = []
+    if conversations and isinstance(conversations[0], dict):
+        conversations = [conversations]
 
-    if isinstance(video, list) and len(video) > 0:
-        # Check first element to determine the type
-        first_elem = video[0]
+    for conversation in conversations:
+        for message in conversation:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for ele in content:
+                if (
+                    "image" in ele
+                    or "image_url" in ele
+                    or ele.get("type", "text") in ("image", "image_url")
+                ):
+                    image_inputs.append(
+                        fetch_image(ele, image_patch_size=image_patch_size)
+                    )
+                elif "video" in ele or ele.get("type") == "video":
+                    raise ValueError(
+                        "Only text+image inputs are supported; video input is not supported."
+                    )
 
-        if isinstance(first_elem, Image.Image):
-            return True
+    return image_inputs if image_inputs else None
 
-        if isinstance(first_elem, str):
-            return is_image_path(first_elem)
 
-    return False
+IMAGE_MIN_TOKEN_NUM = 4
+IMAGE_MAX_TOKEN_NUM = 16384
 
 
 # Define embedder class for processing inputs and generating embeddings
@@ -192,9 +264,6 @@ class Qwen3VLEmbedder:
         max_length: int = MAX_LENGTH,
         min_pixels: int = MIN_PIXELS,
         max_pixels: int = MAX_PIXELS,
-        total_pixels: int = MAX_TOTAL_PIXELS,
-        fps: float = FPS,
-        max_frames: int = MAX_FRAMES,
         default_instruction: str = "Represent the user's input.",
         **kwargs,
     ):
@@ -203,9 +272,6 @@ class Qwen3VLEmbedder:
         self.max_length = max_length
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels
-        self.total_pixels = total_pixels
-        self.fps = fps
-        self.max_frames = max_frames
 
         self.default_instruction = default_instruction
 
@@ -225,42 +291,11 @@ class Qwen3VLEmbedder:
             "attention_mask": inputs.get("attention_mask"),
         }
 
-    # Truncate token sequence to a specified max length
-    def _truncate_tokens(self, token_ids: List[int], max_length: int) -> List[int]:
-        if len(token_ids) <= max_length:
-            return token_ids
-
-        special_token_ids = set(self.processor.tokenizer.all_special_ids)
-        num_special = sum(
-            1 for token_idx in token_ids if token_idx in special_token_ids
-        )
-        num_non_special_to_keep = max_length - num_special
-
-        final_token_ids = []
-        non_special_kept_count = 0
-        # Ensure retention of special tokens while truncating the rest
-        for token_idx in token_ids:
-            if token_idx in special_token_ids:
-                final_token_ids.append(token_idx)
-            elif non_special_kept_count < num_non_special_to_keep:
-                final_token_ids.append(token_idx)
-                non_special_kept_count += 1
-        return final_token_ids
-
     def format_model_input(
         self,
         text: Optional[Union[List[str], str]] = None,
         image: Optional[Union[List[Union[str, Image.Image]], str, Image.Image]] = None,
-        video: Optional[
-            Union[
-                List[Union[str, List[Union[str, Image.Image]]]],
-                str,
-                List[Union[str, Image.Image]],
-            ]
-        ] = None,
         instruction: Optional[str] = None,
-        fps: Optional[float] = None,
-        max_frames: Optional[int] = None,
     ) -> List[Dict]:
 
         # Ensure instruction ends with punctuation
@@ -299,51 +334,10 @@ class Qwen3VLEmbedder:
         else:
             images = image
 
-        # Normalize video input to list
-        if video is None:
-            videos = []
-        elif is_video_input(video):
-            videos = [video]
-        else:
-            # Assume it's a list of videos
-            videos = video
-
-        # Add text, image, or video content to conversation
-        if not texts and not images and not videos:
+        # Add text or image content to conversation
+        if not texts and not images:
             content.append({"type": "text", "text": "NULL"})
             return conversation
-
-        # Process each video
-        for vid in videos:
-            video_content = None
-            video_kwargs = {"total_pixels": self.total_pixels}
-
-            if isinstance(vid, list):
-                # Video as frame sequence
-                video_content = vid
-                if self.max_frames is not None:
-                    video_content = sample_frames(video_content, self.max_frames)
-                video_content = [
-                    ("file://" + ele if isinstance(ele, str) else ele)
-                    for ele in video_content
-                ]
-            elif isinstance(vid, str):
-                # Video as file path
-                video_content = (
-                    vid if vid.startswith(("http://", "https://")) else "file://" + vid
-                )
-                video_kwargs = {
-                    "fps": fps or self.fps,
-                    "max_frames": max_frames or self.max_frames,
-                }
-            else:
-                raise TypeError(f"Unrecognized video type: {type(vid)}")
-
-            # Add video input to content
-            if video_content:
-                content.append(
-                    {"type": "video", "video": video_content, **video_kwargs}
-                )
 
         # Process each image
         for img in images:
@@ -384,41 +378,27 @@ class Qwen3VLEmbedder:
         )
 
         try:
-            images, video_inputs, video_kwargs = process_vision_info(
+            images = process_vision_info(
                 conversations,
                 image_patch_size=16,
-                return_video_metadata=True,
-                return_video_kwargs=True,
             )
         except Exception as e:
             logger.error(f"Error in processing vision info: {e}")
             images = None
-            video_inputs = None
-            video_kwargs = {"do_sample_frames": False}
             text = self.processor.apply_chat_template(
                 [{"role": "user", "content": [{"type": "text", "text": "NULL"}]}],
                 add_generation_prompt=True,
                 tokenize=False,
             )
 
-        if video_inputs is not None:
-            videos, video_metadata = zip(*video_inputs)
-            videos = list(videos)
-            video_metadata = list(video_metadata)
-        else:
-            videos, video_metadata = None, None
-
         inputs = self.processor(
             text=text,
             images=images,
-            videos=videos,
-            video_metadata=video_metadata,
             truncation=True,
             max_length=self.max_length,
             padding=True,
             do_resize=False,
             return_tensors="pt",
-            **video_kwargs,
         )
         return inputs
 
@@ -435,14 +415,21 @@ class Qwen3VLEmbedder:
 
     # Process inputs to generate normalized embeddings
     def process(self, inputs: List[Dict[str, Any]], normalize: bool = True) -> tuple:
+        for ele in inputs:
+            unsupported = [
+                key for key in ("video", "fps", "max_frames") if ele.get(key) is not None
+            ]
+            if unsupported:
+                raise ValueError(
+                    "Qwen3VLEmbedder only supports text+image inputs; "
+                    f"unsupported keys: {', '.join(unsupported)}"
+                )
+
         conversations = [
             self.format_model_input(
                 text=ele.get("text"),
                 image=ele.get("image"),
-                video=ele.get("video"),
                 instruction=ele.get("instruction"),
-                fps=ele.get("fps"),
-                max_frames=ele.get("max_frames"),
             )
             for ele in inputs
         ]

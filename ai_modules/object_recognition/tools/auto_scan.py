@@ -17,11 +17,11 @@ import os
 from typing import Any, Dict, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ai_modules.object_recognition.configs.dataclasses import RecognitionConfig
-    from ai_modules.object_recognition.tools.client_embedding import (
+    from ..configs.dataclasses import RecognitionConfig
+    from .client_embedding import (
         Qwen3VLEmbeddingClient,
     )
-    from ai_modules.object_recognition.tools.vector_db import VectorDB
+    from .vector_db import VectorDB
 
 logger = logging.getLogger(__name__)
 

@@ -6,17 +6,17 @@
 
 from dataclasses import dataclass, field
 
-from config.paths_config import get_project_models_dir, get_project_recognition_db
+from ai_config.paths_config import get_default_paths
 
 
 def _default_assets_model_path() -> str:
     """从项目路径获取物体识别模型默认路径。"""
-    return str(get_project_models_dir())
+    return str(get_default_paths().assets_model_dir)
 
 
 def _default_vector_db_path() -> str:
     """从项目路径获取物体识别数据库默认路径。"""
-    return str(get_project_recognition_db())
+    return str(get_default_paths().object_recognition_db)
 
 
 @dataclass(frozen=False)

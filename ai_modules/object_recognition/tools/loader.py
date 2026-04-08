@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from ai_modules.object_recognition.configs.dataclasses import (
+from ..configs.dataclasses import (
     EmbeddingModelConfig,
     RecognitionConfig,
     VectorDBConfig,

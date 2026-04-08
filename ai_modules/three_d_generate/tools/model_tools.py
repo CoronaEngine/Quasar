@@ -18,7 +18,7 @@ from ai_tools.response_adapter import (
     build_success_result,
     build_error_result,
 )
-from config.paths_config import get_project_models_dir, _get_active_project_path
+from ai_config.paths_config import get_project_models_dir, _get_active_project_path
 from ai_modules.three_d_generate.tools.client_3d import Rodin3DClient
 
 import re
