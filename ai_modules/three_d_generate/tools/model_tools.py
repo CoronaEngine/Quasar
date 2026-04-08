@@ -18,7 +18,6 @@ from ai_tools.response_adapter import (
     build_success_result,
     build_error_result,
 )
-from config.app_config import get_app_config
 from config.paths_config import get_project_models_dir, _get_active_project_path
 from ai_modules.three_d_generate.tools.client_3d import Rodin3DClient
 
@@ -205,6 +204,11 @@ class RodinGenerate3DInput(BaseModel):
         description="文本提示词。mode=text_to_3d 时必填",
     )
 
+    object_id: Optional[str] = Field(
+        default=None,
+        description="模型文件名使用的对象标识（不含扩展名）",
+    )
+
     condition_mode: str = Field(default="concat")
     tier: str = Field(default="Regular")
     quality: Optional[str] = None
@@ -241,8 +245,6 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
     poll_interval = threed_config.poll_interval
     poll_timeout = threed_config.poll_timeout
 
-    app_paths = get_app_config().paths
-
     media_registry = get_media_registry()
 
     # ==================== 后台异步函数 ====================
@@ -251,6 +253,7 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
         repo_root: Path,
         downloads: List[Dict[str, str]],
         object_dir_name: str,
+        model_object_id: str,
         mode: str,
         geometry_file_format: str,
         tier: str,
@@ -277,7 +280,7 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
                 if ext in {".glb", ".gltf", ".obj", ".fbx"}:
                     typ = "mesh"
                     mesh_count += 1
-                    preferred = f"base{ext}"
+                    preferred = f"{model_object_id}{ext}"
                     output_type = "file"
                 else:
                     typ = ext
@@ -307,7 +310,7 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
                             "tier": tier,
                             "quality": quality,
                             "name": it.get("name"),
-                            "short_id": "base" if typ == "mesh" else typ,
+                            "short_id": model_object_id if typ == "mesh" else typ,
                         },
                     )
 
@@ -327,6 +330,7 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
         mode: str = "image_to_3d",
         images: Optional[List[str]] = None,
         prompt: Optional[str] = None,
+        object_id: Optional[str] = None,
         condition_mode: str = "concat",
         tier: str = "Regular",
         quality: Optional[str] = None,
@@ -343,6 +347,14 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
             assets_model_root = get_project_models_dir().resolve()
 
             mode = (mode or "").strip()
+            requested_object_id = str(object_id or "").strip()
+            mesh_object_id = _safe_filename(requested_object_id) if requested_object_id else "base"
+            if requested_object_id and requested_object_id != mesh_object_id:
+                logger.warning(
+                    "object_id 包含非法文件名字符，已规范化: raw=%s, sanitized=%s",
+                    requested_object_id,
+                    mesh_object_id,
+                )
 
             # 解析 fileid:// -> http(s) url
             image_list: List[str] = []
@@ -465,7 +477,7 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
 
                 ext = os.path.splitext(_filename_from_url(url))[1].lower() or ".bin"
                 preview_count += 1
-                preferred = f"{preview_count:04d}{ext}"
+                preferred = f"preview_{preview_count:04d}{ext}"
                 output_type = "image"
 
                 try:
@@ -526,6 +538,7 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
                         repo_root,
                         rest_items,
                         object_dir_name,
+                        mesh_object_id,
                         mode,
                         geometry_file_format,
                         tier,
@@ -546,7 +559,9 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
                 parts=preview_parts,
                 metadata={
                     "model_folder": model_folder_relative,
-                    "object_id": object_dir_name,
+                    "folder_object_id": object_dir_name,
+                    "mesh_object_id": mesh_object_id,
+                    "requested_object_id": requested_object_id,
                     "task_uuid": result.get("task_uuid"),
                     "preview_count": len(preview_parts),
                     "has_mesh_pending": len(rest_items) > 0,

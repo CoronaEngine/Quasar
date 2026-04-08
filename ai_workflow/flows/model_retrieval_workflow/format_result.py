@@ -11,7 +11,11 @@ from .formatters import format_result_checkpoint_parts
 logger = logging.getLogger(__name__)
 
 
-@stream_output_node("integrated", format_result_checkpoint_parts)
+@stream_output_node(
+    "integrated",
+    format_result_checkpoint_parts,
+    node_name="format_result",
+)
 def format_result_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
     """汇总模型检索/生成结果，写入 global_assets 并输出对话内容。"""
     model_results = state.get("model_results", [])

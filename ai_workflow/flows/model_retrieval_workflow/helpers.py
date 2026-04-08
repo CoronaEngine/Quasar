@@ -3,16 +3,55 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
 
 from ai_config.ai_config import get_ai_config
 from ai_tools.registry import get_tool_registry
-from config.app_config import get_app_config
-from config.paths_config import get_project_recognition_db
+from ai_tools.response_adapter import FILEID_SCHEME
+from config.paths_config import _get_active_project_path, get_project_recognition_db
 
 logger = logging.getLogger(__name__)
+
+PREVIEW_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def _resolve_preview_part_url(part: Dict[str, Any]) -> str:
+    """解析 3D 工具 image part，优先返回可展示的预览图路径。"""
+    raw_url = str(part.get("content_url") or "").strip()
+    if raw_url.startswith(FILEID_SCHEME):
+        file_id = raw_url[len(FILEID_SCHEME):].strip()
+        if file_id:
+            try:
+                from ai_media_resource import get_media_registry
+
+                resolved = str(get_media_registry().resolve(file_id) or "").strip()
+                if resolved:
+                    return resolved
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("3D 预览图 file_id 解析失败: %s, err=%s", file_id, exc)
+
+    for key in ("content_url", "content_path", "content_text"):
+        candidate = str(part.get(key) or "").strip()
+        if not candidate:
+            continue
+
+        lowered = candidate.lower()
+        if lowered.startswith(("http://", "https://", "data:", "file://")):
+            return candidate
+
+        path_obj = Path(candidate)
+        if path_obj.is_absolute():
+            return str(path_obj)
+
+        suffix = path_obj.suffix.lower()
+        if suffix in PREVIEW_IMAGE_EXTENSIONS:
+            abs_path = (_get_active_project_path() / path_obj).resolve()
+            return str(abs_path)
+
+    return ""
 
 
 def normalize_object_id(name: str, fallback_index: int) -> str:
@@ -108,7 +147,8 @@ def parse_3d_result(raw_result: Any) -> Dict[str, Any]:
         metadata = parsed.get("metadata") or {}
         model_folder: str = metadata.get("model_folder", "")
         has_mesh_pending: bool = metadata.get("has_mesh_pending", False)
-        meta_object_id: str = metadata.get("object_id", "")
+        folder_object_id: str = metadata.get("folder_object_id", "") or metadata.get("object_id", "")
+        mesh_object_id: str = metadata.get("mesh_object_id", "") or metadata.get("model_object_id", "")
 
         parts = parsed["llm_content"][0]["part"]
         preview_paths: List[str] = []
@@ -116,7 +156,7 @@ def parse_3d_result(raw_result: Any) -> Dict[str, Any]:
 
         for part in parts:
             if part.get("content_type") == "image":
-                preview_path = part.get("content_text") or part.get("content_url") or ""
+                preview_path = _resolve_preview_part_url(part)
                 if preview_path:
                     preview_paths.append(preview_path)
                 part_param = part.get("parameter") or {}
@@ -130,13 +170,16 @@ def parse_3d_result(raw_result: Any) -> Dict[str, Any]:
         )
 
         if model_folder:
-            model_path = f"{model_folder}/base.{geometry_file_format}"
+            file_stem = mesh_object_id or folder_object_id or "base"
+            model_path = f"{model_folder}/{file_stem}.{geometry_file_format}"
             parameter: Dict[str, Any] = {
                 "preview_paths": preview_paths,
                 "model_folder": model_folder,
                 "geometry_file_format": geometry_file_format,
                 "has_mesh_pending": has_mesh_pending,
-                "object_id": meta_object_id,
+                "object_id": folder_object_id,
+                "folder_object_id": folder_object_id,
+                "mesh_object_id": mesh_object_id,
             }
             return {
                 "model_path": model_path,
@@ -145,6 +188,50 @@ def parse_3d_result(raw_result: Any) -> Dict[str, Any]:
     except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
         pass
     return {"error": "3D 生成结果解析失败"}
+
+
+def pick_first_preview_path(*candidates: Any) -> str:
+    """从若干候选图片路径集合中选择第一条可用路径。"""
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            text = candidate.strip()
+            if text:
+                return text
+            continue
+
+        if isinstance(candidate, list):
+            for item in candidate:
+                text = str(item or "").strip()
+                if text:
+                    return text
+    return ""
+
+
+def find_sibling_preview_image(model_path: str) -> str:
+    """在模型同目录中查找第一张预览图（不递归）。"""
+    path_text = str(model_path or "").strip()
+    if not path_text:
+        return ""
+
+    lowered = path_text.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return ""
+
+    model_file = Path(path_text)
+    model_dir = model_file if model_file.is_dir() else model_file.parent
+    if not model_dir.exists() or not model_dir.is_dir():
+        return ""
+
+    try:
+        for entry in sorted(model_dir.iterdir(), key=lambda item: item.name.lower()):
+            if not entry.is_file():
+                continue
+            if entry.suffix.lower() in PREVIEW_IMAGE_EXTENSIONS:
+                return str(entry)
+    except OSError:
+        return ""
+
+    return ""
 
 
 def get_recognition_db_config() -> Dict[str, Any]:

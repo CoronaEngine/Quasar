@@ -66,7 +66,7 @@ WORKFLOW_COMMANDS: Dict[str, int] = {
 
 register_workflow_checkpoints(
     MULTI_SCENE_FUNCTION_ID,
-    {"human_review", "aggregate_result"},
+    {"human_review", "generate_images", "aggregate_result"},
 )
 
 __all__ = [

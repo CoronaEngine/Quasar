@@ -7,8 +7,8 @@
   3. 若未命中，调用 three_d_generate 模块生成新 3D 模型
 
 DAG 拓扑：
-  START → dispatch_node → retrieve_or_generate_node → register_node
-      → format_result_node → END
+    START → dispatch_node → retrieve_node → generate_node
+            → register_node → format_result_node → END
 
 保持对外接口约定（function_id、WORKFLOWS / WORKFLOW_COMMANDS 导出）。
 """
@@ -25,8 +25,9 @@ from ai_workflow.state import ModelRetrievalWorkflowState
 from .constants import MODEL_RETRIEVAL_FUNCTION_ID
 from .dispatch import dispatch_node
 from .format_result import format_result_node
+from .generate import generate_node
 from .register import register_node
-from .retrieve_or_generate import retrieve_or_generate_node
+from .retrieve import retrieve_node
 
 try:
     from .test_cases import TEST_CASES
@@ -42,13 +43,15 @@ def build_model_retrieval_workflow() -> "CompiledStateGraph":
     graph = StateGraph(ModelRetrievalWorkflowState)
 
     graph.add_node("dispatch", dispatch_node)
-    graph.add_node("retrieve_or_generate", retrieve_or_generate_node)
+    graph.add_node("retrieve", retrieve_node)
+    graph.add_node("generate", generate_node)
     graph.add_node("register", register_node)
     graph.add_node("format_result", format_result_node)
 
     graph.add_edge(START, "dispatch")
-    graph.add_edge("dispatch", "retrieve_or_generate")
-    graph.add_edge("retrieve_or_generate", "register")
+    graph.add_edge("dispatch", "retrieve")
+    graph.add_edge("retrieve", "generate")
+    graph.add_edge("generate", "register")
     graph.add_edge("register", "format_result")
     graph.add_edge("format_result", END)
 
@@ -65,7 +68,7 @@ WORKFLOW_COMMANDS: Dict[str, int] = {
 
 register_workflow_checkpoints(
     MODEL_RETRIEVAL_FUNCTION_ID,
-    {"retrieve_or_generate", "format_result"},
+    {"retrieve", "generate", "format_result"},
 )
 
 __all__ = [

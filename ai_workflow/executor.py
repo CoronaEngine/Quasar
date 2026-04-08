@@ -19,6 +19,8 @@
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 from typing import Any, Generator, Optional
 
 from ai_workflow.adapter import (
@@ -26,15 +28,85 @@ from ai_workflow.adapter import (
     format_response,
 )
 from ai_workflow.loop_state import update_loop_global_assets
+from ai_workflow.progress import (
+    publish_node_entries_event,
+    publish_stream_event,
+    register_stream_event_queue,
+    unregister_stream_event_queue,
+)
 from ai_workflow.registry import get_workflow_registry
 from ai_workflow.state import WorkflowState, deep_merge_dict
-from ai_tools.common import build_error_response
+from ai_tools.common import build_error_response, build_success_response
 from ai_tools.context import (
     set_current_session,
     reset_current_session,
 )
 
 logger = logging.getLogger(__name__)
+
+WORKFLOW_HEARTBEAT_INTERVAL = 5.0
+
+
+def _annotate_checkpoint_entries(
+    entries: list[dict[str, Any]],
+    *,
+    node_name: str,
+    function_id: int,
+    checkpoint_index: int,
+) -> list[dict[str, Any]]:
+    """为 checkpoint 产出的 entry 注入稳定的分组标识。"""
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        parts = entry.get("part", [])
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            parameter = part.get("parameter")
+            if not isinstance(parameter, dict):
+                parameter = {}
+                part["parameter"] = parameter
+            checkpoint = parameter.get("checkpoint")
+            if not isinstance(checkpoint, dict):
+                checkpoint = {}
+                parameter["checkpoint"] = checkpoint
+            checkpoint.update(
+                {
+                    "entry_scope": "node",
+                    "node_name": node_name,
+                    "function_id": function_id,
+                    "checkpoint_index": checkpoint_index,
+                }
+            )
+    return entries
+
+
+def _build_workflow_node_heartbeat(
+    *,
+    interface_type: str,
+    session_id: str,
+    metadata: dict[str, Any],
+    function_id: int,
+    node_name: str,
+    phase: str = "start",
+    boundary: bool = True,
+) -> str:
+    """构造工作流心跳包。"""
+    return build_success_response(
+        interface_type=interface_type,
+        session_id=session_id,
+        metadata={
+            **metadata,
+            "heartbeat": True,
+            "workflow_node_boundary": boundary,
+            "workflow_node": node_name,
+            "workflow_node_phase": phase,
+            "function_id": function_id,
+        },
+        llm_content=[],
+    )
 
 
 def run_workflow(
@@ -211,47 +283,177 @@ def stream_workflow(
             return
 
         checkpoints = checkpoint_nodes
-        accumulated_assets: dict[str, Any] = {}
-        ended_awaiting_review = False
+        next_checkpoint_index = 0
+        node_checkpoint_index_map: dict[str, int] = {}
 
         logger.info(
             f"Streaming workflow function_id={function_id}, session={session_id}, "
             f"checkpoints={checkpoints}"
         )
 
-        for chunk in graph.stream(state, stream_mode="updates"):
-            # chunk 格式: {"node_name": {partial_state_update}}
-            for node_name, node_update in chunk.items():
-                if not isinstance(node_update, dict):
-                    continue
+        base_metadata = state.get("metadata", {})
+        event_queue = register_stream_event_queue(session_id)
 
-                # 追踪 awaiting_review 最终状态（True=工作流暂停在审核点）
-                if "awaiting_review" in node_update:
-                    ended_awaiting_review = bool(node_update["awaiting_review"])
+        def _stream_worker() -> None:
+            accumulated_assets: dict[str, Any] = {}
+            ended_awaiting_review = False
+            worker_token = set_current_session(session_id)
 
-                # 累积所有节点的 global_assets 增量
-                ga_delta = node_update.get("global_assets")
-                if isinstance(ga_delta, dict) and ga_delta:
-                    accumulated_assets = deep_merge_dict(
-                        accumulated_assets, ga_delta
+            try:
+                for chunk in graph.stream(state, stream_mode="updates"):
+                    for node_name, node_update in chunk.items():
+                        if not isinstance(node_update, dict):
+                            continue
+
+                        if "awaiting_review" in node_update:
+                            ended_awaiting_review = bool(
+                                node_update["awaiting_review"]
+                            )
+
+                        ga_delta = node_update.get("global_assets")
+                        if isinstance(ga_delta, dict) and ga_delta:
+                            accumulated_assets = deep_merge_dict(
+                                accumulated_assets, ga_delta
+                            )
+
+                        if node_name not in checkpoints:
+                            continue
+
+                        new_entries = node_update.get("dialogue_entries", [])
+                        if not new_entries:
+                            continue
+
+                        publish_node_entries_event(
+                            session_id,
+                            node_name,
+                            new_entries,
+                        )
+
+                if accumulated_assets and not ended_awaiting_review:
+                    metadata = state.get("metadata", {})
+                    workflow_test = metadata.get("workflow_test", False)
+                    persist_to_loop_state = metadata.get(
+                        "persist_to_loop_state", False
                     )
 
-                if node_name not in checkpoints:
+                    if workflow_test:
+                        if persist_to_loop_state:
+                            logger.info(
+                                f"[Stream] Test mode with persist enabled: "
+                                f"writing accumulated_assets to loop_state (session={session_id})"
+                            )
+                            update_loop_global_assets(session_id, accumulated_assets)
+                        else:
+                            logger.info(
+                                f"[Stream] Test mode: skipping accumulated_assets sync to loop_state "
+                                f"(persist_to_loop_state=False, session={session_id})"
+                            )
+                    else:
+                        update_loop_global_assets(session_id, accumulated_assets)
+            except Exception as e:
+                logger.error(
+                    f"Streaming workflow execution failed: {e}",
+                    exc_info=True,
+                )
+                publish_stream_event(
+                    session_id,
+                    {
+                        "kind": "response",
+                        "payload": build_error_response(
+                            interface_type=interface_type,
+                            session_id=session_id,
+                            exc=e,
+                            metadata=state.get("metadata", {}),
+                        ),
+                    },
+                )
+            finally:
+                reset_current_session(worker_token)
+                publish_stream_event(session_id, {"kind": "done"})
+
+        worker = threading.Thread(
+            target=_stream_worker,
+            name=f"workflow-stream-{session_id}",
+            daemon=True,
+        )
+        worker.start()
+
+        try:
+            active_node_name = ""
+            while True:
+                try:
+                    event = event_queue.get(timeout=WORKFLOW_HEARTBEAT_INTERVAL)
+                except queue.Empty:
+                    yield _build_workflow_node_heartbeat(
+                        interface_type=interface_type,
+                        session_id=session_id,
+                        metadata=base_metadata,
+                        function_id=function_id,
+                        node_name=active_node_name,
+                        phase="keepalive",
+                        boundary=False,
+                    )
                     continue
 
-                # stream_mode="updates" 下，node_update 是节点本轮新增的增量，
-                # 直接取 dialogue_entries 即为该节点新产生的条目。
-                new_entries = node_update.get("dialogue_entries", [])
-                if not new_entries:
+                kind = event.get("kind")
+
+                if kind == "done":
+                    break
+
+                if kind == "response":
+                    payload = event.get("payload")
+                    if payload:
+                        yield payload
                     continue
 
-                from ai_tools.common import build_success_response
+                if kind == "boundary":
+                    node_name = str(event.get("node_name", "") or "")
+                    if not node_name:
+                        continue
+                    active_node_name = node_name
+                    if node_name in checkpoints:
+                        next_checkpoint_index += 1
+                        node_checkpoint_index_map[node_name] = (
+                            next_checkpoint_index
+                        )
+                    yield _build_workflow_node_heartbeat(
+                        interface_type=interface_type,
+                        session_id=session_id,
+                        metadata=base_metadata,
+                        function_id=function_id,
+                        node_name=node_name,
+                        phase=str(event.get("phase", "start") or "start"),
+                    )
+                    continue
+
+                if kind != "content":
+                    continue
+
+                node_name = str(event.get("node_name", "") or "")
+                if node_name:
+                    active_node_name = node_name
+                new_entries = event.get("entries", [])
+                if node_name not in checkpoints or not new_entries:
+                    continue
+
+                checkpoint_index = node_checkpoint_index_map.get(node_name)
+                if checkpoint_index is None:
+                    next_checkpoint_index += 1
+                    checkpoint_index = next_checkpoint_index
+                    node_checkpoint_index_map[node_name] = checkpoint_index
+
+                annotated_entries = _annotate_checkpoint_entries(
+                    new_entries,
+                    node_name=node_name,
+                    function_id=function_id,
+                    checkpoint_index=checkpoint_index,
+                )
 
                 response = build_success_response(
                     interface_type=interface_type,
                     session_id=session_id,
-                    metadata=state.get("metadata", {}),
-                    llm_content=new_entries,
+                    metadata=base_metadata,
+                    llm_content=annotated_entries,
                 )
 
                 logger.info(
@@ -259,27 +461,9 @@ def stream_workflow(
                     f"yield {len(new_entries)} content entries"
                 )
                 yield response
-
-        # 在工作流完整执行完毕时回写 global_assets（工作流测试模式可控制是否回写）
-        if accumulated_assets and not ended_awaiting_review:
-            metadata = state.get("metadata", {})
-            workflow_test = metadata.get("workflow_test", False)
-            persist_to_loop_state = metadata.get("persist_to_loop_state", False)
-
-            if workflow_test:
-                if persist_to_loop_state:
-                    logger.info(
-                        f"[Stream] Test mode with persist enabled: "
-                        f"writing accumulated_assets to loop_state (session={session_id})"
-                    )
-                    update_loop_global_assets(session_id, accumulated_assets)
-                else:
-                    logger.info(
-                        f"[Stream] Test mode: skipping accumulated_assets sync to loop_state "
-                        f"(persist_to_loop_state=False, session={session_id})"
-                    )
-            else:
-                update_loop_global_assets(session_id, accumulated_assets)
+        finally:
+            worker.join(timeout=1.0)
+            unregister_stream_event_queue(session_id, event_queue)
 
     except Exception as e:
         logger.error(f"Streaming workflow execution failed: {e}", exc_info=True)
