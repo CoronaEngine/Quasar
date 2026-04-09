@@ -93,7 +93,7 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
             model_dir = os.path.join(project_path, raw_model_path)
             model_dir = model_dir if os.path.isdir(model_dir) else os.path.dirname(model_dir)
             
-        output_dir = os.path.join(model_dir, "multiviews")
+        output_dir = model_dir
         os.makedirs(output_dir, exist_ok=True)
         
         logger.info(f"[Workflow] 正在准备为 {actor_name} 生成环绕视图...")
