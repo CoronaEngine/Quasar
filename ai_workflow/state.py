@@ -158,6 +158,9 @@ class ModelRetrievalWorkflowState(BaseWorkflowState, total=False):
     model_results: List[Dict[str, Any]]
     intermediate: Dict[str, Any]
     metadata: Dict[str, Any]
+    six_view_images: Optional[Dict[str, str]]
+    six_view_images: Dict[str, Any]
+    needs_retry: bool
 
 
 def create_initial_state(

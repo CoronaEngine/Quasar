@@ -211,64 +211,84 @@ def generate_single_item(task: Dict[str, Any], generate_tool: Any) -> Dict[str, 
 
 @stream_output_node("integrated", format_retrieve_or_generate_checkpoint_parts)
 def retrieve_or_generate_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
-    """先完成全部检索，再对未命中的物体并发生成 3D 模型。"""
+    """先完成全部检索，再对未命中的物体并发生成 3D 模型。支持视觉校验的重试循环。"""
     tasks = state.get("intermediate", {}).get("retrieval_tasks", [])
     if not tasks:
         return {"error": "无检索/生成任务"}
+
+    previous_results = state.get("model_results", [])
 
     search_tool = get_search_tool()
     if not search_tool:
         logger.warning("[Workflow][retrieve_or_generate] 检索工具不可用，将全部走生成")
 
-    retrieval_results: List[Dict[str, Any]] = []
-    pending_generation: List[Dict[str, Any]] = []
+    # === 核心修改：三路分流队列 ===
+    completed_results: List[Dict[str, Any]] = []    # 已经合格或命中的
+    tasks_to_retrieve: List[Dict[str, Any]] = []    # 需要去检索的全新任务
+    pending_generation: List[Dict[str, Any]] = []   # 需要强制（重新）生成的任务
 
-    indexed_tasks = [
-        {**task, "task_index": task.get("task_index", index)}
-        for index, task in enumerate(tasks, start=1)
-    ]
+    for index, task in enumerate(tasks, start=1):
+        task_copy = {**task, "task_index": task.get("task_index", index)}
+        object_id = task_copy.get("object_id", "")
 
-    max_workers = min(len(indexed_tasks), SEARCH_MAX_WORKERS) or 1
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(retrieve_single_item, task, search_tool): task
-            for task in indexed_tasks
-        }
-        for future in concurrent.futures.as_completed(futures):
-            task = futures[future]
-            try:
-                retrieved = future.result()
-            except Exception as e:
-                logger.error(
-                    "[Workflow][retrieve_or_generate] %s 检索任务异常: %s",
-                    task.get("item_name", "?"),
-                    e,
-                )
-                retrieved = {
-                    "item_name": task.get("item_name", "未知"),
-                    "object_id": task.get("object_id", ""),
-                    "task_index": task.get("task_index", 0),
-                    "input_image_url": task.get("image_url", ""),
-                    "source": "pending_generation",
-                    "search_status": "error",
-                    "search_error": str(e),
-                }
+        # 去历史记录里找找，这个物体之前处理过没？
+        existing_result = next((r for r in previous_results if r.get("object_id") == object_id), None)
 
-            if retrieved.get("source") == "retrieval":
-                retrieval_results.append(retrieved)
+        if existing_result:
+            # 1. 已经审查合格，或者本身就是从库里检索出来的（不需要重做）
+            if existing_result.get("review_passed") or existing_result.get("source") == "retrieval":
+                logger.info(f"[Workflow] {object_id} 已合格或检索命中，直接放行保留。")
+                completed_results.append(existing_result)
+            # 2. 审查被拒，需要重试
             else:
-                pending_generation.append(retrieved)
+                retry_count = existing_result.get("retry_count", 0)
+                logger.info(f"[Workflow] {object_id} 视觉审查不合格，进入重新生成队列 (当前重试: {retry_count}次)...")
+                task_copy["retry_count"] = retry_count  # 把重试次数继承给新任务
+                pending_generation.append(task_copy)
+        else:
+            # 3. 第一次碰到的新任务
+            tasks_to_retrieve.append(task_copy)
 
+
+    # === 阶段 1：只对全新的任务执行向量数据库检索 ===
+    max_search_workers = min(len(tasks_to_retrieve), SEARCH_MAX_WORKERS) or 1
+    if tasks_to_retrieve:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_search_workers) as pool:
+            futures = {
+                pool.submit(retrieve_single_item, task, search_tool): task
+                for task in tasks_to_retrieve
+            }
+            for future in concurrent.futures.as_completed(futures):
+                task = futures[future]
+                try:
+                    retrieved = future.result()
+                except Exception as e:
+                    logger.error(f"[Workflow][retrieve] {task.get('item_name')} 异常: {e}")
+                    retrieved = {
+                        "item_name": task.get("item_name", "未知"),
+                        "object_id": task.get("object_id", ""),
+                        "task_index": task.get("task_index", 0),
+                        "input_image_url": task.get("image_url", ""),
+                        "source": "pending_generation",
+                        "search_error": str(e),
+                    }
+
+                # 检索到了就进保护区，没检索到就扔进生成区
+                if retrieved.get("source") == "retrieval":
+                    completed_results.append(retrieved)
+                else:
+                    pending_generation.append(retrieved)
+
+
+    # === 阶段 2：对未命中检索，以及被视觉审查打回来的任务执行 3D 生成 ===
     generated_results: List[Dict[str, Any]] = []
     if pending_generation:
         generate_tool = get_3d_generate_tool()
         if not generate_tool:
-            logger.warning(
-                "[Workflow][retrieve_or_generate] 3D 生成工具不可用，未命中项将返回错误"
-            )
+            logger.warning("[Workflow][generate] 3D 生成工具不可用！")
 
-        max_workers = min(len(pending_generation), GENERATION_MAX_WORKERS) or 1
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        max_gen_workers = min(len(pending_generation), GENERATION_MAX_WORKERS) or 1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_gen_workers) as pool:
             futures = {
                 pool.submit(generate_single_item, task, generate_tool): task
                 for task in pending_generation
@@ -276,37 +296,31 @@ def retrieve_or_generate_node(state: ModelRetrievalWorkflowState) -> Dict[str, A
             for future in concurrent.futures.as_completed(futures):
                 task = futures[future]
                 try:
-                    generated_results.append(future.result())
+                    res = future.result()
+                    # 【关键】把重试次数塞进结果里，让审查节点能读到
+                    if "retry_count" in task:
+                        res["retry_count"] = task["retry_count"]
+                    generated_results.append(res)
                 except Exception as e:
-                    logger.error(
-                        "[Workflow][retrieve_or_generate] %s 生成任务异常: %s",
-                        task.get("item_name", "?"),
-                        e,
-                    )
-                    generated_results.append(
-                        {
-                            "item_name": task.get("item_name", "未知"),
-                            "object_id": task.get("object_id", ""),
-                            "task_index": task.get("task_index", 0),
-                            "input_image_url": task.get("input_image_url", ""),
-                            "source": "generation",
-                            "error": str(e),
-                        }
-                    )
+                    logger.error(f"[Workflow][generate] {task.get('item_name')} 异常: {e}")
+                    generated_results.append({
+                        "item_name": task.get("item_name", "未知"),
+                        "object_id": task.get("object_id", ""),
+                        "task_index": task.get("task_index", 0),
+                        "source": "generation",
+                        "error": str(e),
+                    })
 
+    # === 合并所有结果：通关的 + 新生成的 ===
     results = sorted(
-        retrieval_results + generated_results,
+        completed_results + generated_results,
         key=lambda item: item.get("task_index", 0),
     )
 
     logger.info(
-        "[Workflow][retrieve_or_generate] 完成: 检索命中 %s, 生成 %s, 失败 %s",
-        sum(1 for row in results if row.get("source") == "retrieval"),
-        sum(
-            1
-            for row in results
-            if row.get("source") == "generation" and not row.get("error")
-        ),
+        "[Workflow][retrieve_or_generate] 轮次完成: 命中保护 %s, 生成完成 %s, 失败 %s",
+        sum(1 for row in results if row.get("source") == "retrieval" or row.get("review_passed")),
+        sum(1 for row in results if row.get("source") == "generation" and not row.get("error")),
         sum(1 for row in results if row.get("error")),
     )
 
