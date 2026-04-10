@@ -336,23 +336,26 @@ class VectorDB:
         vec_str = _numpy_to_vec_string(query_embedding)
         conn = self._get_connection()
 
-        # 使用 sqlite-vec 的 MATCH 语法做近似检索
+        # sqlite-vec 要求 LIMIT/k=? 必须直接作用于 vec0 扫描本身；
+        # 将 vec0 查询提取为子查询，外层再做 JOIN，避免查询规划器看不到 LIMIT。
         rows = conn.execute(
             """
             SELECT
-                v.object_rowid,
-                v.distance,
                 m.object_id,
                 m.name,
                 m.category,
                 m.image_paths,
                 m.description,
-                m.created_at
-            FROM object_vectors v
+                m.created_at,
+                v.distance
+            FROM (
+                SELECT object_rowid, distance
+                FROM object_vectors
+                WHERE embedding MATCH ?
+                LIMIT ?
+            ) v
             JOIN object_metadata m ON m.id = v.object_rowid
-            WHERE v.embedding MATCH ?
             ORDER BY v.distance
-            LIMIT ?
             """,
             (vec_str, top_k),
         ).fetchall()
@@ -360,13 +363,13 @@ class VectorDB:
         results = []
         for row in rows:
             results.append({
-                "object_id": row[2],
-                "name": row[3],
-                "category": row[4],
-                "distance": float(row[1]),
-                "image_paths": json.loads(row[5]) if row[5] else [],
-                "description": row[6] or "",
-                "created_at": row[7] or "",
+                "object_id": row[0],
+                "name": row[1],
+                "category": row[2],
+                "distance": float(row[6]),
+                "image_paths": json.loads(row[3]) if row[3] else [],
+                "description": row[4] or "",
+                "created_at": row[5] or "",
             })
 
         logger.debug(f"向量搜索完成: top_k={top_k}, 返回 {len(results)} 条结果")

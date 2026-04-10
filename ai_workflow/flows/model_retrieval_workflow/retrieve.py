@@ -8,9 +8,9 @@ from typing import Any, Dict, List
 from ai_workflow.state import ModelRetrievalWorkflowState
 from ai_workflow.streaming import stream_output_node
 
-from .constants import SEARCH_DISTANCE_THRESHOLD, SEARCH_MAX_WORKERS
+from .constants import SEARCH_MAX_WORKERS
 from .formatters import NO_OUTPUT
-from .helpers import get_search_tool, parse_search_result
+from .helpers import get_search_tool
 from .test_cases import get_test_case
 
 logger = logging.getLogger(__name__)
@@ -116,39 +116,42 @@ def retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, An
                 "top_k": 1,
             }
         )
-        search_info = parse_search_result(raw)
-        matches = search_info.get("matches", [])
-        search_error = search_info.get("error", "")
+        
+        # 简化：工具已返回标准化hit字段，无需手动解析
+        hit = raw.get("hit", False)
+        best_match = raw.get("best_match")
+        error_msg = raw.get("status_info", "")
         elapsed = time.perf_counter() - started_at
 
-        if search_error:
+        # 处理错误
+        if error_msg or "error_code" in raw:
             logger.warning(
                 "[Workflow][retrieve] %s 检索失败，将降级生成: %s (elapsed=%.2fs)",
                 name,
-                search_error,
+                error_msg or "未知错误",
                 elapsed,
             )
             result.update(
                 {
                     "source": "pending_generation",
                     "search_status": "error",
-                    "search_error": search_error,
+                    "search_error": error_msg or "检索异常",
                 }
             )
             return result
 
-        if matches and matches[0].get("distance", 999) < SEARCH_DISTANCE_THRESHOLD:
-            best = matches[0]
-            image_paths = best.get("image_paths", [])
+        # 处理是否命中
+        if hit and best_match:
+            image_paths = best_match.get("image_paths", [])
             if not isinstance(image_paths, list):
                 image_paths = []
             result.update(
                 {
                     "source": "retrieval",
-                    "object_id": best.get("object_id", ""),
-                    "name": best.get("name", ""),
-                    "distance": best.get("distance", 0),
-                    "model_path": best.get("model_path", ""),
+                    "object_id": best_match.get("object_id", ""),
+                    "name": best_match.get("name", ""),
+                    "distance": best_match.get("distance", 0),
+                    "model_path": best_match.get("model_path", ""),
                     "image_paths": image_paths,
                     "search_elapsed_seconds": round(elapsed, 3),
                 }
@@ -156,13 +159,14 @@ def retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, An
             logger.info(
                 "[Workflow][retrieve] %s 检索命中: object_id=%s, distance=%.4f, elapsed=%.2fs",
                 name,
-                best.get("object_id"),
-                best.get("distance", 0),
+                best_match.get("object_id"),
+                best_match.get("distance", 0),
                 elapsed,
             )
             return result
 
-        best_distance = matches[0].get("distance", "N/A") if matches else "N/A"
+        # 未命中
+        best_distance = best_match.get("distance", "N/A") if best_match else "N/A"
         logger.info(
             "[Workflow][retrieve] %s 检索未命中（最佳 distance=%s, elapsed=%.2fs）",
             name,

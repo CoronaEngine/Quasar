@@ -11,7 +11,7 @@ import numpy as np
 from ai_config.ai_config import get_ai_config
 from ai_tools.registry import get_tool_registry
 from ai_tools.response_adapter import FILEID_SCHEME
-from ai_config.paths_config import _get_active_project_path, get_project_recognition_db
+from ai_config.paths_config import _get_active_project_path
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,11 @@ def get_search_tool():
     return get_tool("search_similar_object")
 
 
+def get_store_tool():
+    """获取物体入库工具。"""
+    return get_tool("store_object")
+
+
 def get_3d_generate_tool():
     """获取 3D 模型生成工具。"""
     return get_tool("rodin_generate_3d")
@@ -118,24 +123,6 @@ def extract_tool_error(parsed_result: Dict[str, Any]) -> str:
     return "工具调用失败"
 
 
-def parse_search_result(raw_result: Any) -> Dict[str, Any]:
-    """解析 search_similar_object 返回值。"""
-    try:
-        parsed = parse_tool_result(raw_result)
-        error_message = extract_tool_error(parsed)
-        if error_message:
-            return {"matches": [], "error": error_message}
-
-        parts = parsed["llm_content"][0]["part"]
-        for part in parts:
-            matches = part.get("parameter", {}).get("matches", [])
-            if isinstance(matches, list):
-                return {"matches": matches, "error": ""}
-    except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
-        pass
-    return {"matches": [], "error": "搜索结果解析失败"}
-
-
 def parse_3d_result(raw_result: Any) -> Dict[str, Any]:
     """解析 rodin_generate_3d 返回值，提取模型文件路径与元数据。"""
     try:
@@ -147,8 +134,12 @@ def parse_3d_result(raw_result: Any) -> Dict[str, Any]:
         metadata = parsed.get("metadata") or {}
         model_folder: str = metadata.get("model_folder", "")
         has_mesh_pending: bool = metadata.get("has_mesh_pending", False)
-        folder_object_id: str = metadata.get("folder_object_id", "") or metadata.get("object_id", "")
-        mesh_object_id: str = metadata.get("mesh_object_id", "") or metadata.get("model_object_id", "")
+        folder_object_id: str = metadata.get("folder_object_id", "") or metadata.get(
+            "object_id", ""
+        )
+        mesh_object_id: str = metadata.get("mesh_object_id", "") or metadata.get(
+            "model_object_id", ""
+        )
 
         parts = parsed["llm_content"][0]["part"]
         preview_paths: List[str] = []
@@ -234,30 +225,6 @@ def find_sibling_preview_image(model_path: str) -> str:
     return ""
 
 
-def get_recognition_db_config() -> Dict[str, Any]:
-    """读取 object_recognition 向量库配置。"""
-    cfg = get_ai_config()
-    raw = getattr(cfg, "object_recognition", None)
-
-    db_path = str(get_project_recognition_db())
-    vector_dim = 1024
-
-    if isinstance(raw, dict):
-        vector_cfg = raw.get("vector_db", {}) or {}
-        db_path = str(vector_cfg.get("db_path", db_path))
-        vector_dim = int(vector_cfg.get("vector_dim", vector_dim))
-    elif raw is not None:
-        vector_cfg = getattr(raw, "vector_db", None)
-        if vector_cfg is not None:
-            db_path = str(getattr(vector_cfg, "db_path", db_path))
-            vector_dim = int(getattr(vector_cfg, "vector_dim", vector_dim))
-
-    return {
-        "db_path": db_path,
-        "vector_dim": vector_dim,
-    }
-
-
 def build_placeholder_embedding(
     object_id: str,
     model_path: str,
@@ -275,32 +242,3 @@ def build_placeholder_embedding(
     if norm > 1e-12:
         vec = vec / norm
     return vec
-
-
-def get_embedding_client():
-    """获取 Qwen3-VL-Embedding 客户端单例，按需从配置初始化。"""
-    # return None  # TEMP: 临时屏蔽嵌入模型，注册阶段将降级为占位向量
-    from ai_modules.object_recognition.configs.dataclasses import (
-        EmbeddingModelConfig,
-        RecognitionConfig,
-    )
-    from ai_modules.object_recognition.tools.client_embedding import (
-        get_embedding_client,
-    )
-
-    cfg = get_ai_config()
-    raw = getattr(cfg, "object_recognition", None)
-
-    if isinstance(raw, dict):
-        embedding_raw = raw.get("embedding", {}) or {}
-        embedding_cfg = (
-            EmbeddingModelConfig(**embedding_raw)
-            if embedding_raw
-            else EmbeddingModelConfig()
-        )
-    elif isinstance(raw, RecognitionConfig):
-        embedding_cfg = raw.embedding
-    else:
-        embedding_cfg = EmbeddingModelConfig()
-
-    return get_embedding_client(embedding_cfg)

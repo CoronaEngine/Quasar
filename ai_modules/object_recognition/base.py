@@ -4,9 +4,12 @@
 提供物体入库和物体搜索两个 HTTP 接口入口，
 通过 @register_entrance 装饰器注册到 ai_entrance 全局路由。
 
+同时提供 LangChain StructuredTool 工具加载能力。
+
 接口列表:
     - handle_object_store:  物体入库（六面图 → 嵌入向量 → 存储）
     - handle_object_search: 物体搜索（图片/文字 → 嵌入向量 → 检索）
+    - load_recognition_tools: 加载 StructuredTool 工具列表（供 ToolRegistry）
 """
 
 from __future__ import annotations
@@ -19,7 +22,6 @@ from ai_tools.common import (
     ensure_dict,
     build_error_response,
     build_success_response,
-    parse_tool_response,
 )
 from ai_tools.concurrency import session_concurrency
 from ai_service.entrance import register_entrance
@@ -35,11 +37,20 @@ from ai_tools.session_tracking import (
     set_session_error,
 )
 
+# 导入核心执行逻辑
+from .tools.execution import (
+    core_execute_object_store,
+    core_execute_object_search,
+    extract_recognition_config,
+)
+
+# 导入工具加载
+from .tools.recognition_tools import load_recognition_tools
+
 logger = logging.getLogger(__name__)
 
 # 模块接口类型标识
 INTERFACE_TYPE = "object_recognition"
-
 
 # ====================================================================== #
 #  物体入库接口
@@ -119,49 +130,21 @@ def _handle_object_store_inner(
         if not description:
             description = extract_prompt_from_llm_content(request_data) or ""
 
-        # 加载物体识别工具并执行入库
-        from .tools.recognition_tools import (
-            load_recognition_tools,
+        # 直接调用核心执行逻辑（不经过工具 invoke）
+        core_result = core_execute_object_store(
+            cfg=cfg,
+            object_id=object_id,
+            image_paths=image_paths,
+            name=name,
+            category=category,
+            description=description,
         )
 
-        tools = load_recognition_tools(cfg)
-        if not tools:
-            raise RuntimeError("物体识别功能未启用或配置不完整")
+        if "error" in core_result:
+            raise RuntimeError(core_result["error"])
 
-        # 找到入库工具
-        store_tool = None
-        for tool in tools:
-            if tool.name == "store_object":
-                store_tool = tool
-                break
-
-        if store_tool is None:
-            raise RuntimeError("未找到物体入库工具")
-
-        result_json = store_tool.invoke(
-            {
-                "object_id": object_id,
-                "image_paths": image_paths,
-                "name": name,
-                "category": category,
-                "description": description,
-            },
-            config={"session_id": session_id},
-        )
-
-        logger.debug(f"store_tool 返回: {result_json}")
-        tool_envelope = parse_tool_response(result_json)
-
-        if tool_envelope.get("error_code", 0) != 0:
-            error_msg = tool_envelope.get("status_info", "未知错误")
-            raise RuntimeError(f"物体入库失败: {error_msg}")
-
-        llm_content = tool_envelope.get("llm_content", [])
-        if not llm_content:
-            raise RuntimeError("物体入库未返回有效内容")
-
-        parts = llm_content[0].get("part", [])
-
+        # 构建响应
+        parts = core_result.get("parts", [])
         update_session_state(session_id, "completed")
         return build_success_response(
             interface_type=INTERFACE_TYPE,
@@ -259,46 +242,19 @@ def _handle_object_search_inner(
         if not isinstance(top_k, int) or top_k < 1:
             top_k = 5
 
-        # 加载物体识别工具并执行搜索
-        from .tools.recognition_tools import (
-            load_recognition_tools,
+        # 直接调用核心执行逻辑（不经过工具 invoke）
+        core_result = core_execute_object_search(
+            cfg=cfg,
+            query_images=query_images or [],
+            query_text=query_text,
+            top_k=top_k,
         )
 
-        tools = load_recognition_tools(cfg)
-        if not tools:
-            raise RuntimeError("物体识别功能未启用或配置不完整")
+        if "error" in core_result:
+            raise RuntimeError(core_result["error"])
 
-        # 找到搜索工具
-        search_tool = None
-        for tool in tools:
-            if tool.name == "search_similar_object":
-                search_tool = tool
-                break
-
-        if search_tool is None:
-            raise RuntimeError("未找到物体搜索工具")
-
-        result_json = search_tool.invoke(
-            {
-                "query_images": query_images or [],
-                "query_text": query_text,
-                "top_k": top_k,
-            },
-            config={"session_id": session_id},
-        )
-
-        logger.debug(f"search_tool 返回: {result_json}")
-        tool_envelope = parse_tool_response(result_json)
-
-        if tool_envelope.get("error_code", 0) != 0:
-            error_msg = tool_envelope.get("status_info", "未知错误")
-            raise RuntimeError(f"物体搜索失败: {error_msg}")
-
-        llm_content = tool_envelope.get("llm_content", [])
-        if not llm_content:
-            raise RuntimeError("物体搜索未返回有效内容")
-
-        parts = llm_content[0].get("part", [])
+        # 构建响应
+        parts = core_result.get("parts", [])
         cleaned_parts = _clean_recognition_parts(parts)
 
         update_session_state(session_id, "completed")
@@ -360,8 +316,14 @@ def _clean_recognition_parts(
                     for match in matches:
                         if isinstance(match, dict):
                             cleaned_match = {}
-                            for key in ("rank", "object_id", "name",
-                                        "category", "distance", "description"):
+                            for key in (
+                                "rank",
+                                "object_id",
+                                "name",
+                                "category",
+                                "distance",
+                                "description",
+                            ):
                                 if key in match:
                                     cleaned_match[key] = match[key]
                             if cleaned_match:
@@ -369,8 +331,15 @@ def _clean_recognition_parts(
                     cleaned_param["matches"] = cleaned_matches
 
             # 保留统计字段
-            for key in ("total", "query_images_count", "query_text",
-                        "object_id", "rowid", "image_count", "vector_dim"):
+            for key in (
+                "total",
+                "query_images_count",
+                "query_text",
+                "object_id",
+                "rowid",
+                "image_count",
+                "vector_dim",
+            ):
                 if key in original_param:
                     cleaned_param[key] = original_param[key]
 
@@ -385,4 +354,6 @@ def _clean_recognition_parts(
 __all__ = [
     "handle_object_store",
     "handle_object_search",
+    "load_recognition_tools",
+    "extract_recognition_config",
 ]

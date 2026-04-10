@@ -20,12 +20,7 @@ def OBJECT_RECOGNITION_SETTINGS() -> Dict[str, Any]:
     return {
         "enable": True,
         "embedding": {
-            "model_size": "2B",
             "output_dim": 1024,
-            "model_path": "Qwen/Qwen3-VL-Embedding-2B",
-            "use_4bit": True,
-            "use_flash_attention": False,
-            "device_map": "auto",
         },
         "vector_db": {
             "db_path": db_path,
@@ -35,6 +30,9 @@ def OBJECT_RECOGNITION_SETTINGS() -> Dict[str, Any]:
         "standard_image_count": 6,
         "storage_instruction": "Represent this document for retrieval:",
         "query_instruction": "Represent the query for retrieving relevant documents:",
+        # 云端嵌入服务（Dashscope）
+        "dashscope_api_key": "",
+        "dashscope_model": "tongyi-embedding-vision-plus-2026-03-06",
         # 目录自动扫描
         "auto_scan_dir": str(default_paths.assets_model_dir),
         "auto_scan_embed": True,

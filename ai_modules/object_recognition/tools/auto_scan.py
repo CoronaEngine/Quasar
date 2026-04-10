@@ -18,9 +18,7 @@ from typing import Any, Dict, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..configs.dataclasses import RecognitionConfig
-    from .client_embedding import (
-        Qwen3VLEmbeddingClient,
-    )
+    from .client_embedding import EmbeddingProvider
     from .vector_db import VectorDB
 
 logger = logging.getLogger(__name__)
@@ -40,7 +38,7 @@ _IMAGE_EXTENSIONS = {
 def scan_and_register(
     recognition_cfg: "RecognitionConfig",
     vector_db: "VectorDB",
-    embedding_client: "Qwen3VLEmbeddingClient",
+    embedding_client: "EmbeddingProvider",
 ) -> Dict[str, Any]:
     """
     扫描 auto_scan_dir 下的一级子文件夹，将未登记的物体入库。
@@ -148,6 +146,7 @@ def scan_and_register(
             embedding = embedding_client.embed_for_storage(
                 image_paths=image_paths,
                 text="",
+                instruction=recognition_cfg.storage_instruction,
             )
             vector_db.insert_object(
                 object_id=object_id,
