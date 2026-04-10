@@ -163,6 +163,15 @@ class ModelRetrievalWorkflowState(BaseWorkflowState, total=False):
     needs_retry: bool
 
 
+class SceneCompositionWorkflowState(BaseWorkflowState, total=False):
+    """场景组合工作流状态。"""
+
+    function_id: int
+    prompt: str
+    intermediate: Dict[str, Any]
+    metadata: Dict[str, Any]
+
+
 def create_initial_state(
     *,
     session_id: str,
@@ -220,6 +229,7 @@ __all__ = [
     "ImageWorkflowState",
     "MultiSceneWorkflowState",
     "ModelRetrievalWorkflowState",
+    "SceneCompositionWorkflowState",
     "deep_merge_dict",
     "create_initial_state",
 ]

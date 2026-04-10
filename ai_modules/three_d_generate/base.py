@@ -203,13 +203,29 @@ def _handle_3d_generate_inner(
             raise ValueError("缺少 3D 生成输入：llm_content(text/image) 或 images/image_path/image_url/prompt")
 
         # 加载 3D tools
-        from ai_modules.three_d_generate.tools.model_tools import load_3d_tools
+        from ai_modules.three_d_generate.tools.model_tools import load_3d_tools, load_hunyuan3d_tools
 
-        tools = load_3d_tools(cfg)
+        # 优先尝试混元3D，如果配置了的话
+        tools = []
+        tool_name = None
+        try:
+            hunyuan_tools = load_hunyuan3d_tools(cfg)
+            if hunyuan_tools:
+                tools = hunyuan_tools
+                tool_name = "hunyuan_generate_3d"
+                logger.info("使用混元3D引擎")
+        except Exception as e:
+            logger.debug("混元3D 未配置或加载失败，回退到 Rodin: %s", e)
+
+        if not tools:
+            tools = load_3d_tools(cfg)
+            tool_name = "rodin_generate_3d"
+            logger.info("使用 Rodin 3D引擎")
+
         if not tools:
             raise RuntimeError("3D 生成功能未启用或配置不完整")
 
-        rodin_tool = pick_tool(tools, ["rodin_generate_3d"])
+        selected_tool = pick_tool(tools, [tool_name])
 
         # tool 参数（只传你们 tool 支持的字段）
         tool_params: Dict[str, Any] = {"mode": mode}
@@ -225,16 +241,16 @@ def _handle_3d_generate_inner(
             tool_params["object_id"] = str(object_id)
 
         if mode == "image_to_3d":
-            # img_refs 可能是 fileid/http/本地路径，推荐由 Rodin3DClient 在 client 内部统一转成 multipart
+            # img_refs 可能是 fileid/http/本地路径，由底层 client 统一处理
             tool_params["images"] = img_refs
         else:
             tool_params["prompt"] = prompt
 
-        logger.debug("rodin_tool params=%s", tool_params)
+        logger.debug("3d_tool params=%s (engine=%s)", tool_params, tool_name)
 
         # 调用 tool
         with session_context(session_id) as sid:
-            result_json = rodin_tool.func(**tool_params)
+            result_json = selected_tool.func(**tool_params)
             session_id = sid
 
         # 解析 tool 返回

@@ -234,6 +234,19 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     )
 
 # -----------------------------------------------------------------------
+# 3D 生成工具（混元3D）
+# -----------------------------------------------------------------------
+    from ai_modules.three_d_generate.tools.model_tools import load_hunyuan3d_tools
+
+    registry.register_loader(
+        loader=load_hunyuan3d_tools,
+        category=ToolCategory.SCENE,
+        dependencies=[],
+        requires_config=True,
+        source="tools.hunyuan3d_tools",
+    )
+
+# -----------------------------------------------------------------------
 #  物体识别工具（Qwen3-VL-Embedding + sqlite-vec）
 # -----------------------------------------------------------------------
     from ai_modules.object_recognition.tools.recognition_tools import load_recognition_tools

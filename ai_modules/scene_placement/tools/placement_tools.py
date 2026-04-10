@@ -20,9 +20,6 @@ from ai_modules.scene_placement.tools.loader import load_scene_placement_config
 
 logger = logging.getLogger(__name__)
 
-# === 观测点 1：模块是否被 import ===
-logger.info("[scene_placement] placement_tools imported, file=%s", __file__)
-
 
 # -------------------------
 # helpers
@@ -172,30 +169,28 @@ def _ensure_vec3(x: Any, default: List[float]) -> List[float]:
     return default
 
 
-# ✅ 强制输出到 CoronaEngine 内部：<CoronaEngine>/Scenes/<scene_name>/scene.json
-def _find_coronaengine_root() -> Path:
-    # 1) 支持显式指定（可选）
-    env = (os.environ.get("CORONAENGINE_ROOT") or "").strip()
+def _get_active_project_path() -> Path:
+    """获取当前活跃项目路径，与编辑器场景系统保持一致。"""
+    try:
+        from CoronaCore.core.corona_editor import CoronaEditor
+        project_path = CoronaEditor.CoronaEngine.active_project_path
+        if project_path:
+            return Path(project_path)
+    except Exception:
+        pass
+    # 兜底：环境变量 > cwd
+    env = (os.environ.get("CORONAENGINE_PROJECT") or "").strip()
     if env:
         return Path(env)
-
-    # 2) 从当前文件向上找名为 CoronaEngine 的目录
-    p = Path(__file__).resolve()
-    for parent in p.parents:
-        if parent.name.lower() == "coronaengine":
-            return parent
-
-    # 3) 最后兜底（你机器上的固定路径；不存在也不致命，会在后面 mkdir 时抛）
-    return Path(r"F:\GitHub\CoronaEngine")
+    return Path(os.getcwd())
 
 
 def _normalize_scene_output_path(scene_path: str, scene_name: str) -> Path:
-    root = _find_coronaengine_root()
-    out_dir = root / "Scenes" / (scene_name or "scene")
+    project = _get_active_project_path()
+    out_dir = project / "Scene"
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    # 统一文件名：scene.json（避免上游乱传导致到处写）
-    return out_dir / "scene.json"
+    fname = _safe_filename(scene_name or "scene") + ".json"
+    return out_dir / fname
 
 
 def _extract_first_file_path(env: Dict[str, Any]) -> Optional[str]:

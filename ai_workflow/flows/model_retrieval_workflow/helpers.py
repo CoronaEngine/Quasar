@@ -44,8 +44,11 @@ def get_search_tool():
 
 
 def get_3d_generate_tool():
-    """获取 3D 模型生成工具。"""
-    return get_tool("rodin_generate_3d")
+    """获取 3D 模型生成工具。优先混元3D，回退 Rodin。"""
+    tool = get_tool("hunyuan_generate_3d")
+    if tool is None:
+        tool = get_tool("rodin_generate_3d")
+    return tool
 
 
 def parse_tool_result(raw_result: Any) -> Dict[str, Any]:
@@ -215,5 +218,6 @@ def get_embedding_client():
         embedding_cfg = raw.embedding
     else:
         embedding_cfg = EmbeddingModelConfig()
+
 
     return get_embedding_client(embedding_cfg)

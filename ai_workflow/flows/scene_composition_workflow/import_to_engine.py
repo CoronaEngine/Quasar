@@ -1,0 +1,88 @@
+"""import_to_engine 节点 — 将 scene.json 中的 actor 导入运行中的引擎。"""
+
+from __future__ import annotations
+
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List
+
+from ai_workflow.streaming import stream_output_node
+
+from .constants import IMPORT_MAX_WORKERS
+from .formatters import NO_OUTPUT
+from .helpers import get_tool, parse_import_result
+
+logger = logging.getLogger(__name__)
+
+
+def _import_single_actor(
+    tool,
+    actor: Dict[str, Any],
+    scene_name: str,
+) -> Dict[str, Any]:
+    """导入单个 actor 到引擎，返回结果字典。"""
+    name = actor.get("source_name") or actor.get("name", "unknown")
+    model_path = actor.get("path", "")
+    geometry = actor.get("geometry", {})
+
+    try:
+        raw = tool.invoke({
+            "model_path": model_path,
+            "actor_name": name,
+            "position": geometry.get("pos", [0, 0, 0]),
+            "rotation": geometry.get("rot", [0, 0, 0]),
+            "scale": geometry.get("scale", [1, 1, 1]),
+            "scene_name": scene_name,
+        })
+        parsed = parse_import_result(raw)
+        if parsed.get("error"):
+            return {"name": name, "error": parsed["error"]}
+        return {"name": parsed.get("actor_name", name), "model_path": model_path, "status": "success"}
+    except Exception as exc:
+        logger.error("导入 actor %s 失败: %s", name, exc, exc_info=True)
+        return {"name": name, "error": str(exc)}
+
+
+@stream_output_node("integrated", NO_OUTPUT)
+def import_to_engine_node(state) -> Dict[str, Any]:
+    """并发导入所有 actor 到引擎场景中。"""
+    intermediate = state.get("intermediate", {})
+    actors = intermediate.get("scene_actors", [])
+    scene_name = intermediate.get("scene_name", "composed_scene")
+
+    if not actors:
+        return {"error": "scene_actors 为空，无法导入"}
+
+    tool = get_tool("import_model")
+    if tool is None:
+        return {"error": "import_model 工具未注册"}
+
+    logger.info("import_to_engine: 开始导入 %d 个 actor (max_workers=%d)", len(actors), IMPORT_MAX_WORKERS)
+
+    imported: List[Dict[str, Any]] = []
+    failed: List[Dict[str, Any]] = []
+
+    with ThreadPoolExecutor(max_workers=IMPORT_MAX_WORKERS) as pool:
+        future_map = {
+            pool.submit(_import_single_actor, tool, actor, scene_name): actor
+            for actor in actors
+        }
+        for future in as_completed(future_map):
+            result = future.result()
+            if result.get("error"):
+                failed.append(result)
+            else:
+                imported.append(result)
+
+    logger.info(
+        "import_to_engine: 完成 — 成功 %d, 失败 %d",
+        len(imported),
+        len(failed),
+    )
+
+    return {
+        "intermediate": {
+            "imported_actors": imported,
+            "failed_actors": failed,
+        },
+    }

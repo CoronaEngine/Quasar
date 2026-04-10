@@ -200,9 +200,9 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 camera.set(position, fwd, up, fov)
                 time.sleep(0.15) 
 
-                # 截图并保存字典
+                # 同步截图：阻塞直到 OpticsSystem 渲染线程完成保存
                 filepath = os.path.join(output_dir, f"{view_name}.png")
-                camera.save_screenshot(filepath)
+                camera.save_screenshot_sync(filepath)
                 view_dict[view_name] = filepath
 
             # 记录这 6 张图的结果
