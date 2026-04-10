@@ -517,6 +517,9 @@ def create_legacy_omni_task(
 
             if url.startswith(FILEID_SCHEME):
                 file_id = url[len(FILEID_SCHEME):]
+                local_candidate = Path(file_id)
+                if local_candidate.exists():
+                    return file_url_to_data_uri(local_candidate.resolve().as_uri())
                 registry = get_media_registry()
                 result = registry.resolve(file_id)
                 if isinstance(result, dict):

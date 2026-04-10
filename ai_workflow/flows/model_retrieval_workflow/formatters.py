@@ -230,6 +230,49 @@ def _build_user_visible_parts(
     return parts, stats
 
 
+def _build_checkpoint_items(model_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """构建供前端 checkpoint 面板消费的精简结果。"""
+    items: List[Dict[str, Any]] = []
+    for row in model_results:
+        name = row.get("item_name", "未知")
+        source = row.get("source", "")
+        error = str(row.get("error", "") or "").strip()
+
+        if source == "retrieval" and not error:
+            items.append(
+                {
+                    "item_name": name,
+                    "status": "retrieval",
+                    "object_id": row.get("object_id", ""),
+                    "distance": row.get("distance", 0),
+                }
+            )
+            continue
+
+        if source == "generation" and not error:
+            item = {
+                "item_name": name,
+                "status": "generation",
+                "model_path": row.get("model_path", ""),
+            }
+            if row.get("register_status"):
+                item["register_status"] = row.get("register_status")
+            if row.get("retry_count"):
+                item["retry_count"] = row.get("retry_count")
+            items.append(item)
+            continue
+
+        items.append(
+            {
+                "item_name": name,
+                "status": "error",
+                "error": error or "处理失败",
+            }
+        )
+
+    return items
+
+
 def format_generate_progress_parts(
     row: Dict[str, Any],
     *,
@@ -254,6 +297,30 @@ def format_generate_progress_parts(
     return parts
 
 
+def format_retrieve_or_generate_checkpoint_parts(
+    data: Dict[str, Any],
+    _state: ModelRetrievalWorkflowState,
+) -> List[Dict[str, Any]]:
+    """为 retrieve_or_generate 检查点输出可视化摘要。"""
+    model_results = data.get("model_results", [])
+    if not isinstance(model_results, list) or not model_results:
+        return []
+
+    parts, stats = _build_user_visible_parts(
+        model_results=model_results,
+        title="## 模型检索阶段结果",
+        summary_prefix="已处理",
+        include_register_status=False,
+    )
+    if parts:
+        parts[0]["parameter"] = {
+            "checkpoint": "retrieve_or_generate",
+            "summary": stats,
+            "items": _build_checkpoint_items(model_results),
+        }
+    return parts
+
+
 def format_result_checkpoint_parts(
     data: Dict[str, Any],
     state: ModelRetrievalWorkflowState,
@@ -274,5 +341,17 @@ def format_result_checkpoint_parts(
             "error_count": mr_stats.get("error_count", 0),
         },
     )
+
+    if parts:
+        parts[0]["parameter"] = {
+            "checkpoint": "format_result",
+            "summary": {
+                "total": len(model_results),
+                "retrieval_count": mr_stats.get("retrieval_count", 0),
+                "generation_count": mr_stats.get("generation_count", 0),
+                "error_count": mr_stats.get("error_count", 0),
+            },
+            "items": _build_checkpoint_items(model_results),
+        }
 
     return parts

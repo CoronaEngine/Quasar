@@ -276,6 +276,19 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
         source="tools.placement_tools",
     )
 
+# -----------------------------------------------------------------------
+#  场景合理性审查工具（scene_review）
+# -----------------------------------------------------------------------
+    from ai_modules.mcp.tools.scene_review_tools import load_scene_review_tools
+
+    registry.register_loader(
+        loader=load_scene_review_tools,
+        category=ToolCategory.SCENE,
+        dependencies=[],
+        requires_config=False,
+        source="tools.mcp.scene_review",
+    )
+
 
 # ===========================================================================
 # 公开 API
