@@ -637,7 +637,9 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
         session_id: str,
         registry,
     ):
-        """后台异步下载 mesh 和其他非 preview 文件"""
+        """后台异步下载 mesh 和其他非 preview 文件，ZIP 自动解压"""
+        import zipfile
+
         _logger = logging.getLogger(__name__)
         try:
             mesh_count = 0
@@ -651,13 +653,21 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
                 if ext in {".webp", ".png", ".jpg", ".jpeg"}:
                     continue
 
-                if ext in {".glb", ".gltf", ".obj", ".fbx", ".stl", ".usdz"}:
+                # ---- 判断类型 ----
+                is_zip = ext == ".zip"
+                is_mesh = ext in {".glb", ".gltf", ".obj", ".fbx", ".stl", ".usdz"}
+
+                if is_mesh:
                     typ = "mesh"
                     mesh_count += 1
                     preferred = f"base{ext}"
                     output_type = "file"
+                elif is_zip:
+                    typ = "archive"
+                    preferred = f"model_{batch_tag}.zip"
+                    output_type = "file"
                 else:
-                    typ = ext
+                    typ = ext.lstrip(".")
                     preferred = f"{typ}_{batch_tag}{ext}"
                     output_type = "file"
 
@@ -668,24 +678,119 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
                         timeout=float(hunyuan_config.request_timeout),
                         preferred_filename=preferred,
                     )
-                    relative_path = _to_repo_relative_path(local_path, repo_root)
 
-                    file_id = registry.register(
-                        session_id=session_id,
-                        content_url=str(Path(local_path).resolve()),
-                        resource_type=output_type,
-                        content_text=relative_path,
-                        parameter={
-                            "additional_type": ["hunyuan_3d"],
-                            "object_id": object_dir_name,
-                            "mode": mode,
-                            "result_format": result_format,
-                            "name": it.get("name"),
-                            "short_id": "base" if typ == "mesh" else typ,
-                        },
-                    )
+                    if is_zip:
+                        # ---- ZIP 解压：解压到目录后删除 ZIP ----
+                        _logger.info(f"混元3D解压ZIP: {local_path}")
+                        extracted_files = []
+                        try:
+                            with zipfile.ZipFile(local_path, "r") as zf:
+                                for member in zf.namelist():
+                                    # 跳过目录条目和隐藏文件
+                                    if member.endswith("/") or member.startswith("__MACOSX"):
+                                        continue
+                                    # 安全解压：只取文件名，防止路径穿越
+                                    orig_name = os.path.basename(member)
+                                    if not orig_name:
+                                        continue
+                                    member_ext = os.path.splitext(orig_name)[1].lower()
+                                    # 重命名为语义化文件名
+                                    if member_ext in {".obj", ".glb", ".gltf", ".fbx", ".stl", ".usdz"}:
+                                        safe_name = f"base{member_ext}"
+                                    elif member_ext == ".mtl":
+                                        safe_name = f"base.mtl"
+                                    else:
+                                        safe_name = _safe_filename(orig_name)
+                                    if not safe_name:
+                                        continue
+                                    dest_path = os.path.join(str(object_dir), safe_name)
+                                    # 避免覆盖已存在的同名文件（如 base.glb）
+                                    if os.path.exists(dest_path):
+                                        base_n, ext_n = os.path.splitext(safe_name)
+                                        dest_path = os.path.join(str(object_dir), f"{base_n}_from_zip{ext_n}")
+                                    with zf.open(member) as src, open(dest_path, "wb") as dst:
+                                        dst.write(src.read())
+                                    extracted_files.append(dest_path)
 
-                    _logger.debug(f"混元3D后台下载+注册完成: {url} -> {relative_path} (file_id={file_id})")
+                            # 删除原始 ZIP
+                            try:
+                                os.remove(local_path)
+                            except Exception:
+                                pass
+
+                            # 注册解压出的文件
+                            for ef in extracted_files:
+                                ef_ext = os.path.splitext(ef)[1].lower()
+                                relative_path = _to_repo_relative_path(ef, repo_root)
+
+                                if ef_ext in {".obj", ".glb", ".gltf", ".fbx", ".stl", ".usdz"}:
+                                    ef_type = "file"
+                                    ef_short = "obj_model"
+                                    mesh_count += 1
+                                elif ef_ext in {".mtl"}:
+                                    ef_type = "file"
+                                    ef_short = "material"
+                                elif ef_ext in {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tiff"}:
+                                    ef_type = "file"
+                                    ef_short = "texture"
+                                else:
+                                    ef_type = "file"
+                                    ef_short = ef_ext.lstrip(".") or "misc"
+
+                                file_id = registry.register(
+                                    session_id=session_id,
+                                    content_url=str(Path(ef).resolve()),
+                                    resource_type=ef_type,
+                                    content_text=relative_path,
+                                    parameter={
+                                        "additional_type": ["hunyuan_3d"],
+                                        "object_id": object_dir_name,
+                                        "mode": mode,
+                                        "result_format": result_format,
+                                        "name": os.path.basename(ef),
+                                        "short_id": ef_short,
+                                    },
+                                )
+                                _logger.debug(f"混元3D ZIP解压注册: {ef} (file_id={file_id})")
+
+                            _logger.info(f"混元3D ZIP解压完成: {len(extracted_files)} 个文件")
+
+                        except zipfile.BadZipFile:
+                            _logger.warning(f"混元3D ZIP文件损坏，保留原文件: {local_path}")
+                            relative_path = _to_repo_relative_path(local_path, repo_root)
+                            registry.register(
+                                session_id=session_id,
+                                content_url=str(Path(local_path).resolve()),
+                                resource_type=output_type,
+                                content_text=relative_path,
+                                parameter={
+                                    "additional_type": ["hunyuan_3d"],
+                                    "object_id": object_dir_name,
+                                    "mode": mode,
+                                    "result_format": result_format,
+                                    "name": it.get("name"),
+                                    "short_id": "archive",
+                                },
+                            )
+                    else:
+                        # ---- 非 ZIP：正常注册 ----
+                        relative_path = _to_repo_relative_path(local_path, repo_root)
+                        file_id = registry.register(
+                            session_id=session_id,
+                            content_url=str(Path(local_path).resolve()),
+                            resource_type=output_type,
+                            content_text=relative_path,
+                            parameter={
+                                "additional_type": ["hunyuan_3d"],
+                                "object_id": object_dir_name,
+                                "mode": mode,
+                                "result_format": result_format,
+                                "name": it.get("name"),
+                                "short_id": "base" if typ == "mesh" else typ,
+                            },
+                        )
+                        _logger.debug(f"混元3D后台下载+注册完成: {url} -> {relative_path} (file_id={file_id})")
+
                 except Exception as e:
                     _logger.warning(f"混元3D后台下载/注册失败: {url}, err={e}")
 
@@ -762,20 +867,12 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
             if not downloads:
                 raise RuntimeError("混元3D 未返回任何可下载文件")
 
-            first_url = None
-            for it in downloads:
-                if not isinstance(it, dict):
-                    continue
-                candidate = str(it.get("url") or "").strip()
-                if candidate:
-                    first_url = candidate
-                    break
-
-            if first_url:
-                candidate_name = os.path.splitext(_filename_from_url(first_url))[0]
-                object_dir_name = _safe_dirname(candidate_name)
+            # 目录名优先使用 prompt 文本（截取前30字符），否则用时间戳
+            if prompt:
+                dir_label = _safe_dirname(prompt[:30])
             else:
-                object_dir_name = "模型"
+                dir_label = f"hunyuan_{time.strftime('%Y%m%d_%H%M%S')}"
+            object_dir_name = dir_label or "模型"
 
             original_dir_name = object_dir_name
             suffix_idx = 1

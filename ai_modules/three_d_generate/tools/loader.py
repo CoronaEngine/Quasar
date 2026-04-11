@@ -46,7 +46,7 @@ def _load_hunyuan_3d_config(raw: Mapping[str, Any] | None) -> Hunyuan3DSettings:
         provider=raw.get("provider", ""),
         api_key=raw.get("api_key", ""),
         region=raw.get("region", "ap-guangzhou"),
-        endpoint=raw.get("endpoint", "ai3d.tencentcloudapi.com"),
+        endpoint=raw.get("endpoint", "tokenhub.tencentmaas.com"),
         version=raw.get("version", "pro"),
         result_format=raw.get("result_format", "GLB"),
         enable_pbr=_as_bool(raw.get("enable_pbr"), False),
