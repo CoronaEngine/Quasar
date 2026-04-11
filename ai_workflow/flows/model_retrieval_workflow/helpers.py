@@ -123,6 +123,75 @@ def extract_tool_error(parsed_result: Dict[str, Any]) -> str:
     return "工具调用失败"
 
 
+def extract_tool_parts(parsed_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """从工具 envelope 中提取 part 列表。"""
+    try:
+        parts = parsed_result["llm_content"][0]["part"]
+    except (KeyError, IndexError, TypeError):
+        return []
+    return parts if isinstance(parts, list) else []
+
+
+def extract_first_part_parameter(parsed_result: Dict[str, Any]) -> Dict[str, Any]:
+    """提取第一条 part.parameter。"""
+    for part in extract_tool_parts(parsed_result):
+        parameter = part.get("parameter")
+        if isinstance(parameter, dict):
+            return parameter
+    return {}
+
+
+def parse_search_result(raw_result: Any) -> Dict[str, Any]:
+    """解析物体搜索工具结果，兼容 dict 与 JSON 字符串。"""
+    parsed = parse_tool_result(raw_result)
+    error_message = extract_tool_error(parsed)
+    if error_message:
+        return {"error": error_message}
+
+    part_parameter = extract_first_part_parameter(parsed)
+
+    hit = parsed.get("hit")
+    if not isinstance(hit, bool):
+        hit = bool(part_parameter.get("hit", False))
+
+    all_matches = parsed.get("all_matches")
+    if not isinstance(all_matches, list):
+        fallback_matches = part_parameter.get("matches", [])
+        all_matches = fallback_matches if isinstance(fallback_matches, list) else []
+
+    best_match = parsed.get("best_match")
+    if not isinstance(best_match, dict):
+        first_match = all_matches[0] if all_matches else None
+        best_match = first_match if isinstance(first_match, dict) else None
+
+    return {
+        "hit": hit,
+        "best_match": best_match,
+        "all_matches": all_matches,
+    }
+
+
+def parse_store_result(raw_result: Any) -> Dict[str, Any]:
+    """解析物体入库工具结果，兼容 dict 与 JSON 字符串。"""
+    parsed = parse_tool_result(raw_result)
+    error_message = extract_tool_error(parsed)
+    if error_message:
+        return {"error": error_message}
+
+    part_parameter = extract_first_part_parameter(parsed)
+    register_status = str(
+        parsed.get("register_status")
+        or part_parameter.get("register_status")
+        or "inserted"
+    ).strip() or "inserted"
+
+    return {
+        "register_status": register_status,
+        "rowid": parsed.get("rowid", part_parameter.get("rowid")),
+        "object_id": parsed.get("object_id", part_parameter.get("object_id", "")),
+    }
+
+
 def parse_3d_result(raw_result: Any) -> Dict[str, Any]:
     """解析 rodin_generate_3d 返回值，提取模型文件路径与元数据。"""
     try:

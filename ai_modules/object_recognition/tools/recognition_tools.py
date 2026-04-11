@@ -95,21 +95,19 @@ def _tool_store_object(
 
     # 错误处理
     if "error" in result:
-        return build_error_result(error_message=result["error"]).to_envelope(
+        return build_error_result(error_message=result["error"]).to_dict(
             interface_type="object_recognition"
         )
 
     # 成功返回：返回标准化格式，供工作流直接使用
     parts = result.get("parts", [])
-    response = build_success_result(parts=parts).to_envelope(
+    response = build_success_result(parts=parts).to_dict(
         interface_type="object_recognition"
     )
 
-    # 注入标准化字段（供工作流使用，避免手动解析）
-    if isinstance(response, dict):
-        response["register_status"] = result.get("register_status", "inserted")
-        response["rowid"] = result.get("rowid")
-        response["object_id"] = object_id
+    response["register_status"] = result.get("register_status", "inserted")
+    response["rowid"] = result.get("rowid")
+    response["object_id"] = object_id
 
     return response
 
@@ -138,21 +136,19 @@ def _tool_search_object(
 
     # 错误处理
     if "error" in result:
-        return build_error_result(error_message=result["error"]).to_envelope(
+        return build_error_result(error_message=result["error"]).to_dict(
             interface_type="object_recognition"
         )
 
     # 成功返回：返回标准化格式，供工作流直接使用
     parts = result.get("parts", [])
-    response = build_success_result(parts=parts).to_envelope(
+    response = build_success_result(parts=parts).to_dict(
         interface_type="object_recognition"
     )
 
-    # 注入标准化字段（供工作流使用，避免手动解析）
-    if isinstance(response, dict):
-        response["hit"] = result.get("hit", False)
-        response["best_match"] = result.get("best_match")
-        response["all_matches"] = result.get("all_matches", [])
+    response["hit"] = result.get("hit", False)
+    response["best_match"] = result.get("best_match")
+    response["all_matches"] = result.get("all_matches", [])
 
     return response
 

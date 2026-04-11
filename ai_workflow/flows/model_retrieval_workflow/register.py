@@ -1,30 +1,51 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional
+import os
+from typing import Any, Dict, List
 
 from ai_workflow.state import ModelRetrievalWorkflowState
 from ai_workflow.streaming import stream_output_node
 
-from .formatters import NO_OUTPUT
+from .formatters import NO_OUTPUT, publish_node_progress
 from .helpers import (
     get_store_tool,
     normalize_object_id,
+    parse_store_result,
 )
 from .test_cases import get_test_case
 
 logger = logging.getLogger(__name__)
 
 
-def get_six_view_generator() -> Optional[Callable[..., List[str]]]:
-    """返回六视图生成函数；当前写死为不支持。"""
-    return None
+def _collect_six_view_paths_from_dict(views: Any) -> List[str]:
+    """从六视图字典中提取可用图片路径，按标准六视图顺序输出。"""
+    if not isinstance(views, dict):
+        return []
+
+    ordered_keys = ("front", "back", "left", "right", "top", "bottom")
+    ordered_paths: List[str] = []
+
+    for key in ordered_keys:
+        value = views.get(key)
+        if isinstance(value, str) and value.strip() and os.path.exists(value):
+            ordered_paths.append(str(value))
+
+    # 兼容未来新增视角字段，避免遗漏可用图片。
+    for key, value in views.items():
+        if key in ordered_keys:
+            continue
+        if isinstance(value, str) and value.strip() and os.path.exists(value):
+            ordered_paths.append(str(value))
+
+    return ordered_paths
 
 
-@stream_output_node("integrated", NO_OUTPUT)
+@stream_output_node("integrated", NO_OUTPUT, node_name="register")
 def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
     """将生成成功的模型写入向量数据库。"""
     model_results = state.get("model_results", [])
+    six_view_images = state.get("six_view_images", {})
     if not model_results:
         return {}
 
@@ -72,6 +93,15 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
                 skipped_count,
                 failed_count,
             )
+            total_count = len(enriched_results)
+            for progress_index, progress_item in enumerate(enriched_results, start=1):
+                publish_node_progress(
+                    state,
+                    progress_item,
+                    node_name="register",
+                    done_count=progress_index,
+                    total_count=total_count,
+                )
             return {
                 "model_results": enriched_results,
                 "intermediate": {
@@ -94,15 +124,22 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
     failed_count = 0
     skipped_count = 0
     enriched_results: List[Dict[str, Any]] = []
-    six_view_generator = get_six_view_generator()
+    total_count = len(model_results)
 
     for idx, row in enumerate(model_results, start=1):
         item = dict(row)
 
-        if row.get("source") != "generation" or row.get("error"):
+        if row.get("source") != "generation" or row.get("error") or not row.get("review_passed"):
             item["register_status"] = "skipped"
             skipped_count += 1
             enriched_results.append(item)
+            publish_node_progress(
+                state,
+                item,
+                node_name="register",
+                done_count=len(enriched_results),
+                total_count=total_count,
+            )
             continue
 
         object_id = row.get("object_id") or normalize_object_id(
@@ -115,36 +152,29 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
 
         if parameter.get("has_mesh_pending", False):
             wait_object_id = parameter.get("object_id") or object_id
-            if six_view_generator:
-                logger.info(
-                    "[Workflow][register] %s 等待后台 mesh 下载完成（用于六视图）...",
-                    wait_object_id,
-                )
-                wait_for_mesh_ready(wait_object_id)
-                logger.info("[Workflow][register] %s mesh 下载已完成", wait_object_id)
-            else:
-                logger.info(
-                    "[Workflow][register] %s 六视图能力不可用，跳过后台 mesh 等待",
-                    wait_object_id,
-                )
+            logger.info(
+                "[Workflow][register] %s 等待后台 mesh 下载完成（用于入库图片稳定化）...",
+                wait_object_id,
+            )
+            wait_for_mesh_ready(wait_object_id)
+            logger.info("[Workflow][register] %s mesh 下载已完成", wait_object_id)
 
-        six_view_paths: List[str] = []
-        if six_view_generator:
-            try:
-                generated = six_view_generator(
-                    object_id=object_id,
-                    model_path=row.get("model_path", ""),
-                    parameter=parameter,
-                    row=item,
+        six_view_paths = _collect_six_view_paths_from_dict(item.get("six_views_dict"))
+
+        actor_candidates = [
+            str(row.get("object_id", "") or "").strip(),
+            str(row.get("item_name", "") or "").strip(),
+            str(object_id or "").strip(),
+        ]
+        if not six_view_paths and isinstance(six_view_images, dict):
+            for actor_name in actor_candidates:
+                if not actor_name:
+                    continue
+                six_view_paths = _collect_six_view_paths_from_dict(
+                    six_view_images.get(actor_name)
                 )
-                if isinstance(generated, list):
-                    six_view_paths = [str(path) for path in generated if path]
-            except Exception as six_exc:  # noqa: BLE001
-                logger.warning(
-                    "[Workflow][register] %s 六视图生成失败，继续沿用原流程: %s",
-                    object_id,
-                    six_exc,
-                )
+                if six_view_paths:
+                    break
 
         image_paths: List[str] = []
         preview_paths = parameter.get("preview_paths", [])
@@ -153,17 +183,27 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
         else:
             item["preview_paths"] = []
 
+        image_source = "input_image_url"
+
         # 图片入嵌入优先级：六视图 > 预览图 > 输入图。
         if six_view_paths:
             image_paths.extend(six_view_paths)
+            image_source = "six_view"
         elif item["preview_paths"]:
             image_paths.extend(item["preview_paths"])
+            image_source = "preview_paths"
         else:
             input_image_url = row.get("input_image_url", "")
             if input_image_url:
                 image_paths.append(str(input_image_url))
 
         dedup_paths = list(dict.fromkeys(image_paths))
+        logger.info(
+            "[Workflow][register] %s 入库图片来源=%s, 数量=%s",
+            object_id,
+            image_source,
+            len(dedup_paths),
+        )
 
         item_name = row.get("item_name", "")
         approved_elements = (
@@ -190,6 +230,13 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
             failed_count += 1
             item["object_id"] = object_id
             enriched_results.append(item)
+            publish_node_progress(
+                state,
+                item,
+                node_name="register",
+                done_count=len(enriched_results),
+                total_count=total_count,
+            )
             continue
 
         try:
@@ -203,13 +250,12 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
                 }
             )
 
-            # 简化：工具已返回标准化字段，无需手动解析
-            register_status = raw_store_result.get("register_status", "inserted")
-            rowid = raw_store_result.get("rowid")
+            parsed_store_result = parse_store_result(raw_store_result)
+            register_status = parsed_store_result.get("register_status", "inserted")
+            rowid = parsed_store_result.get("rowid")
 
-            if register_status == "failed" or "error_code" in raw_store_result:
-                # 错误处理
-                error_msg = raw_store_result.get("status_info", "未知错误")
+            if parsed_store_result.get("error"):
+                error_msg = parsed_store_result.get("error", "未知错误")
                 item["register_status"] = "failed"
                 item["register_error"] = error_msg
                 failed_count += 1
@@ -230,6 +276,13 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
 
         item["object_id"] = object_id
         enriched_results.append(item)
+        publish_node_progress(
+            state,
+            item,
+            node_name="register",
+            done_count=len(enriched_results),
+            total_count=total_count,
+        )
 
     logger.info(
         "[Workflow][register] 完成: inserted=%s, updated=%s, skipped=%s, failed=%s",

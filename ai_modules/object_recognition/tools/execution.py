@@ -140,10 +140,10 @@ def core_execute_object_store(
             unique_paths = list(dict.fromkeys(image_paths))
         else:
             unique_paths = image_paths
-        
+
         if max_images is None:
             max_images = recognition_cfg.standard_image_count
-        
+
         final_paths = unique_paths[:max_images]
 
         logger.info(
@@ -163,11 +163,11 @@ def core_execute_object_store(
 
         # 延迟导入依赖
         from .client_embedding import build_provider
-        from .vector_db import VectorDB
+        from .vector_db import get_vector_db
 
         # 初始化嵌入提供者和向量数据库
         embedding_provider = build_provider(recognition_cfg)
-        vector_db = VectorDB(
+        vector_db = get_vector_db(
             db_path=recognition_cfg.vector_db.db_path,
             vector_dim=recognition_cfg.vector_db.vector_dim,
         )
@@ -228,7 +228,7 @@ def core_execute_object_store(
                 "vector_dim": recognition_cfg.embedding.output_dim,
             },
         )
-        
+
         # 返回标准化结果（供工具和HTTP入口使用）
         return {
             "parts": [part],
@@ -287,11 +287,11 @@ def core_execute_object_search(
 
         # 延迟导入依赖
         from .client_embedding import build_provider
-        from .vector_db import VectorDB
+        from .vector_db import get_vector_db
 
         # 初始化嵌入提供者和向量数据库
         embedding_provider = build_provider(recognition_cfg)
-        vector_db = VectorDB(
+        vector_db = get_vector_db(
             db_path=recognition_cfg.vector_db.db_path,
             vector_dim=recognition_cfg.vector_db.vector_dim,
         )
@@ -362,7 +362,7 @@ def core_execute_object_search(
                 "threshold": distance_threshold,
             },
         )
-        
+
         # 返回标准化结果（供工具和HTTP入口使用）
         return {
             "parts": [part],
