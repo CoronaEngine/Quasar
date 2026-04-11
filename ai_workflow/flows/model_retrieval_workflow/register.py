@@ -45,7 +45,6 @@ def _collect_six_view_paths_from_dict(views: Any) -> List[str]:
 def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
     """将生成成功的模型写入向量数据库。"""
     model_results = state.get("model_results", [])
-    six_view_images = state.get("six_view_images", {})
     if not model_results:
         return {}
 
@@ -160,21 +159,8 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
             logger.info("[Workflow][register] %s mesh 下载已完成", wait_object_id)
 
         six_view_paths = _collect_six_view_paths_from_dict(item.get("six_views_dict"))
-
-        actor_candidates = [
-            str(row.get("object_id", "") or "").strip(),
-            str(row.get("item_name", "") or "").strip(),
-            str(object_id or "").strip(),
-        ]
-        if not six_view_paths and isinstance(six_view_images, dict):
-            for actor_name in actor_candidates:
-                if not actor_name:
-                    continue
-                six_view_paths = _collect_six_view_paths_from_dict(
-                    six_view_images.get(actor_name)
-                )
-                if six_view_paths:
-                    break
+        # 注：仅使用本轮 six_views_dict，不再从历史 state.six_view_images 回退查找
+        # 降级链路：six_views_dict → preview_paths → input_image_url
 
         image_paths: List[str] = []
         preview_paths = parameter.get("preview_paths", [])
@@ -206,10 +192,11 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
         )
 
         item_name = row.get("item_name", "")
-        approved_elements = (
-            state.get("global_assets", {})
-            .get("multi_scene", {})
-            .get("approved_elements", [])
+        global_assets = state.get("global_assets", {}) or {}
+        multi_scene = global_assets.get("multi_scene", {}) or {}
+        approved_elements = multi_scene.get("approved_elements") or state.get(
+            "approved_elements",
+            [],
         )
         image_prompt = (
             next(

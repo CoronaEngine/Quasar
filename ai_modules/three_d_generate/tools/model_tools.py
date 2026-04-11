@@ -431,7 +431,10 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
                     first_url = candidate
                     break
 
-            if first_url:
+            if requested_object_id:
+                # 优先使用语义化 object_id 命名目录，保证 auto_scan 入库时 id 与工作流一致
+                object_dir_name = _safe_dirname(requested_object_id)
+            elif first_url:
                 candidate_name = os.path.splitext(_filename_from_url(first_url))[0]
                 object_dir_name = _safe_dirname(candidate_name)
             else:

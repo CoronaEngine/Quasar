@@ -57,6 +57,8 @@ def _resolve_model_file(model_path: str) -> str:
 
 @stream_output_node("integrated", NO_OUTPUT)
 def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    # 强绑定语义：six_view_images 仅表达本轮截图结果，不维护历史缓存
+    # visual_review 与 register 必须从 result.six_views_dict 读取，不再使用 state 级 six_view_images 兜底
     model_results = state.get("model_results", [])
     if not model_results:
         return {"six_view_images": {}}
@@ -256,4 +258,8 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 except Exception as e:
                     logger.error(f"[Workflow] 清理模型失败: {e}")
 
-    return {"model_results": model_results, "six_view_images": all_saved_views}
+    # 仅返回本轮截图结果，不与历史合并
+    return {
+        "model_results": model_results,
+        "six_view_images": all_saved_views,
+    }

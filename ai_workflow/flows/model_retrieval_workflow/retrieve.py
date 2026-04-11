@@ -52,6 +52,8 @@ def _build_mock_retrieve_outputs(
             ),
             **expected,
         }
+        if task.get("image_prompt") and not merged.get("image_prompt"):
+            merged["image_prompt"] = task.get("image_prompt")
 
         if merged.get("source") == "retrieval" and not merged.get("error"):
             retrieval_results.append(merged)
@@ -94,7 +96,10 @@ def retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, An
         "object_id": object_id,
         "task_index": task.get("task_index", 0),
         "input_image_url": image_url,
+        "task_object_id": task.get("task_object_id", object_id),
     }
+    if image_prompt:
+        result["image_prompt"] = image_prompt
 
     if not search_tool:
         result.update(
@@ -263,6 +268,11 @@ def retrieve_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
                     "object_id": task.get("object_id", ""),
                     "task_index": task.get("task_index", 0),
                     "input_image_url": task.get("image_url", ""),
+                    "task_object_id": task.get(
+                        "task_object_id",
+                        task.get("object_id", ""),
+                    ),
+                    "image_prompt": task.get("image_prompt", ""),
                     "source": "pending_generation",
                     "search_status": "error",
                     "search_error": str(e),
