@@ -618,6 +618,10 @@ class Hunyuan3DGenerate3DInput(BaseModel):
 def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
     hunyuan_config = config.hunyuan3d
 
+    if not getattr(hunyuan_config, 'enable', False):
+        logger.info("混元3D 已禁用 (enable=False)，跳过工具加载")
+        return []
+
     api_key = (hunyuan_config.api_key or "").strip()
     if not api_key:
         raise RuntimeError("混元3D api_key 缺失：请在 settings.hunyuan3d.api_key 配置")

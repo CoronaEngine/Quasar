@@ -29,6 +29,7 @@ class Hunyuan3DSettings:
     腾讯混元生3D 配置
     """
 
+    enable: bool = False
     provider: str = ""
 
     # API 密钥（Bearer Token）

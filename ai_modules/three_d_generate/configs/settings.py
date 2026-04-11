@@ -24,6 +24,7 @@ def RODIN_3D_SETTINGS() -> Dict[str, Any]:
 @ai_entrance.collector.register_setting("hunyuan3d")
 def HUNYUAN_3D_SETTINGS() -> Dict[str, Any]:
     return {
+        "enable": False,
         "api_key": "your_api_key",
         "region": "ap-guangzhou",
         "endpoint": "tokenhub.tencentmaas.com",

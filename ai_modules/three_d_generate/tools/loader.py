@@ -43,6 +43,7 @@ def _load_hunyuan_3d_config(raw: Mapping[str, Any] | None) -> Hunyuan3DSettings:
         return Hunyuan3DSettings()
 
     return Hunyuan3DSettings(
+        enable=_as_bool(raw.get("enable"), False),
         provider=raw.get("provider", ""),
         api_key=raw.get("api_key", ""),
         region=raw.get("region", "ap-guangzhou"),

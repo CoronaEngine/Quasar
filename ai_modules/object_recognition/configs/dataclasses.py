@@ -44,7 +44,7 @@ class RecognitionConfig:
     """物体识别整体配置"""
 
     # 是否启用物体识别模块
-    enable: bool = False
+    enable: bool = True
     # 嵌入模型配置
     embedding: EmbeddingModelConfig = \
         field(default_factory=EmbeddingModelConfig)
