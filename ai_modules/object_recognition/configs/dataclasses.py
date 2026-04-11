@@ -6,35 +6,25 @@
 
 from dataclasses import dataclass, field
 
-from config.paths_config import get_project_models_dir, get_project_recognition_db
+from ai_config.paths_config import get_default_paths
 
 
 def _default_assets_model_path() -> str:
     """从项目路径获取物体识别模型默认路径。"""
-    return str(get_project_models_dir())
+    return str(get_default_paths().assets_model_dir)
 
 
 def _default_vector_db_path() -> str:
     """从项目路径获取物体识别数据库默认路径。"""
-    return str(get_project_recognition_db())
+    return str(get_default_paths().object_recognition_db)
 
 
 @dataclass(frozen=False)
 class EmbeddingModelConfig:
-    """Qwen3-VL-Embedding 嵌入模型配置"""
+    """云端 embedding 输出配置"""
 
-    # 模型尺寸：8B 或 2B
-    model_size: str = "2B"
-    # 嵌入向量维度（Matryoshka 支持 1024/512/256）
+    # 嵌入向量维度，须与远端服务保持一致
     output_dim: int = 1024
-    # 模型权重路径（本地路径或 HuggingFace 仓库 ID）
-    model_path: str = "Qwen/Qwen3-VL-Embedding-2B"
-    # 是否启用 4-bit 量化（nf4 + double_quant + bfloat16）
-    use_4bit: bool = True
-    # 是否启用 Flash Attention 2
-    use_flash_attention: bool = False
-    # 设备映射策略
-    device_map: str = "auto"
 
 
 @dataclass(frozen=False)
@@ -67,6 +57,12 @@ class RecognitionConfig:
     # 查询侧非对称指令
     query_instruction: str = \
         "Represent the query for retrieving relevant documents:"
+
+    # ── 云端嵌入服务配置（Dashscope）──
+    # Dashscope API Key
+    dashscope_api_key: str = ""
+    # Dashscope 多模态嵌入模型名称
+    dashscope_model: str = "tongyi-embedding-vision-plus-2026-03-06"
 
     # ── 目录自动扫描配置 ──
     # 扫描根目录路径（空字符串表示不扫描）

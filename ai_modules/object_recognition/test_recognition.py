@@ -2,13 +2,16 @@
 物体识别模块 —— 测试脚本
 
 分层测试，由浅入深：
-  1. 向量数据库读写（不需要 GPU，秒级完成）
-  2. 嵌入模型加载 + 推理（需要 GPU，首次加载约 1~2 分钟）
-  3. 端到端流程：入库 → 搜索
+    1. 向量数据库读写（本地 CPU，秒级完成）
+    2. 云端嵌入服务连通性（需要可访问的 embedding 服务）
+    3. 端到端流程：远端入库 → 搜索
 
 运行方式:
-    cd d:\\CodeLib\\CoronaArtificialIntelligence
+    cd d:/CodeLib/CoronaEngine/editor/CabbageEditor/plugins/AITool/CoronaArtificialIntelligence
     python -m ai_modules.object_recognition.test_recognition
+
+或直接运行:
+    python ai_modules/object_recognition/test_recognition.py
 """
 
 from __future__ import annotations
@@ -18,10 +21,22 @@ import logging
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 import numpy as np
 
+ai_root = Path(__file__).resolve().parents[2]
+editor_root = Path(__file__).resolve().parents[5]
+for path in (ai_root, editor_root):
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
+
+if __package__ in (None, ""):
+    __package__ = "ai_modules.object_recognition"
+
 logger = logging.getLogger(__name__)
+
 
 def print(*args, **kwargs):
     builtins.print(*args, **kwargs)
@@ -45,7 +60,7 @@ def test_vector_db():
     print("测试 1: 向量数据库 (sqlite-vec)")
     print("=" * 60)
 
-    from ai_modules.object_recognition.tools.vector_db import (
+    from .tools.vector_db import (
         VectorDB,
         normalize_vector,
     )
@@ -141,55 +156,44 @@ def test_vector_db():
 
 
 # ====================================================================== #
-#  测试 2: 嵌入模型（需要 GPU）
+#  测试 2: 云端嵌入服务
 # ====================================================================== #
-def test_embedding_model():
-    """测试 Qwen3-VL-Embedding 模型加载和推理"""
+def test_remote_embedding_service():
+    """测试云端 embedding 服务的存储/查询接口"""
     print("\n" + "=" * 60)
-    print("测试 2: 嵌入模型 (Qwen3-VL-Embedding 2B)")
+    print("测试 2: 云端嵌入服务")
     print("=" * 60)
 
-    import torch
+    from .configs.dataclasses import RecognitionConfig
+    from .tools.client_embedding import get_embedding_client
 
-    print(f"  PyTorch 版本: {torch.__version__}")
-    print(f"  CUDA 可用: {torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        print(f"  GPU: {torch.cuda.get_device_name(0)}")
-        print(
-            f"  显存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB"
-        )
-
-    from ai_modules.object_recognition.configs.dataclasses import EmbeddingModelConfig
-    from ai_modules.object_recognition.tools.client_embedding import (
-        Qwen3VLEmbeddingClient,
+    config = RecognitionConfig()
+    print(f"  远端服务: {config.remote_endpoint}")
+    print(f"  输出维度: {config.embedding.output_dim}")
+    client = get_embedding_client(
+        endpoint=config.remote_endpoint,
+        timeout=config.remote_timeout,
+        output_dim=config.embedding.output_dim,
     )
 
-    # 使用默认 2B 配置（禁用 Flash Attention，Windows 下 flash_attn 不易安装）
-    config = EmbeddingModelConfig(use_flash_attention=False)
-    print(f"  模型: {config.model_path}")
-    print(f"  输出维度: {config.output_dim}")
-    print(f"  4-bit 量化: {config.use_4bit}")
-    print(f"  Flash Attention: {config.use_flash_attention}")
-
-    client = Qwen3VLEmbeddingClient(config)
-
-    # ── 纯文本嵌入 ──
     print("\n  [纯文本] 生成嵌入中...")
-    vec_text = client.embed_for_storage(image_paths=[], text="一个白色的陶瓷杯子")
+    try:
+        vec_text = client.embed_for_storage(image_paths=[], text="一个白色的陶瓷杯子")
+    except Exception as e:
+        print(f"  跳过: 云端 embedding 服务不可用: {e}")
+        return
+
     print(f"  向量维度: {vec_text.shape}")
     print(f"  范数 (应接近 1.0): {np.linalg.norm(vec_text):.6f}")
-    assert vec_text.shape == (config.output_dim,)
+    assert vec_text.shape == (config.embedding.output_dim,)
 
-    # ── 查询侧纯文本 ──
     print("\n  [查询文本] 生成嵌入中...")
     vec_query = client.embed_for_query(text="杯子")
     print(f"  向量维度: {vec_query.shape}")
 
-    # ── 余弦相似度 ──
     cos_sim = np.dot(vec_text, vec_query)
     print(f"  '白色陶瓷杯子' vs '杯子' 余弦相似度: {cos_sim:.4f}")
 
-    # ── 不相关文本 ──
     vec_unrelated = client.embed_for_query(text="一双红色运动鞋")
     cos_sim_unrelated = np.dot(vec_text, vec_unrelated)
     print(f"  '白色陶瓷杯子' vs '红色运动鞋' 余弦相似度: {cos_sim_unrelated:.4f}")
@@ -197,35 +201,36 @@ def test_embedding_model():
     assert cos_sim > cos_sim_unrelated, "相关文本的相似度应高于不相关文本"
     print("  语义区分验证通过 ✓")
 
-    print("\n  嵌入模型测试通过 ✓")
+    print("\n  云端嵌入服务测试通过 ✓")
 
 
 # ====================================================================== #
 #  测试 3: 端到端（入库 + 搜索）
 # ====================================================================== #
 def test_end_to_end():
-    """端到端测试：入库 + 搜索"""
+    """端到端测试：通过云端 embedding 服务完成入库和搜索"""
     print("\n" + "=" * 60)
     print("测试 3: 端到端流程（入库 → 搜索）")
     print("=" * 60)
 
-    from ai_modules.object_recognition.configs.dataclasses import (
-        EmbeddingModelConfig,
+    from .configs.dataclasses import (
+        RecognitionConfig,
         VectorDBConfig,
     )
-    from ai_modules.object_recognition.tools.client_embedding import (
-        Qwen3VLEmbeddingClient,
-    )
-    from ai_modules.object_recognition.tools.vector_db import VectorDB
+    from .tools.client_embedding import build_provider
+    from .tools.vector_db import VectorDB
 
     db_path = os.path.join(tempfile.gettempdir(), "test_e2e_recognition.db")
     if os.path.exists(db_path):
         os.remove(db_path)
 
-    embed_cfg = EmbeddingModelConfig(use_flash_attention=False)
-    db_cfg = VectorDBConfig(db_path=db_path, vector_dim=embed_cfg.output_dim)
+    recognition_cfg = RecognitionConfig(
+        enable=True,
+        vector_db=VectorDBConfig(db_path=db_path, vector_dim=1024),
+    )
+    db_cfg = recognition_cfg.vector_db
 
-    client = Qwen3VLEmbeddingClient(embed_cfg)
+    client = build_provider(recognition_cfg)
     db = VectorDB(db_path=db_cfg.db_path, vector_dim=db_cfg.vector_dim)
 
     # ── 入库：3 个物体（纯文本，不需要图片文件） ──
@@ -237,7 +242,13 @@ def test_end_to_end():
 
     for obj_id, name, category, desc in objects:
         print(f"\n  [入库] {obj_id}: {name}")
-        embedding = client.embed_for_storage(image_paths=[], text=desc)
+        try:
+            embedding = client.embed_for_storage(image_paths=[], text=desc)
+        except Exception as e:
+            db.close()
+            os.remove(db_path)
+            print(f"  跳过: 云端 embedding 服务不可用: {e}")
+            return
         db.insert_object(
             object_id=obj_id,
             embedding=embedding,
@@ -249,7 +260,6 @@ def test_end_to_end():
 
     print(f"\n  数据库中共 {db.count()} 个物体")
 
-    # ── 搜索测试 ──
     queries = [
         ("杯子", "cup_001"),
         ("鼠标", "mouse_001"),
@@ -299,13 +309,12 @@ def test_auto_scan():
 
     import shutil
 
-    from ai_modules.object_recognition.configs.dataclasses import (
-        EmbeddingModelConfig,
+    from .configs.dataclasses import (
         RecognitionConfig,
         VectorDBConfig,
     )
-    from ai_modules.object_recognition.tools.auto_scan import scan_and_register
-    from ai_modules.object_recognition.tools.vector_db import (
+    from .tools.auto_scan import scan_and_register
+    from .tools.vector_db import (
         VectorDB,
         normalize_vector,
     )
@@ -351,11 +360,10 @@ def test_auto_scan():
     dim = 128
     db = VectorDB(db_path=db_path, vector_dim=dim)
 
-    # ── 创建 Mock 嵌入客户端 ──
     class MockEmbeddingClient:
-        """用随机向量模拟嵌入，避免加载 GPU 模型"""
+        """用随机向量模拟云端嵌入，避免依赖远端服务。"""
 
-        def embed_for_storage(self, image_paths, text=""):
+        def embed_for_storage(self, image_paths, text="", instruction=None):
             return normalize_vector(np.random.randn(dim).astype(np.float32))
 
     mock_client = MockEmbeddingClient()
@@ -438,7 +446,7 @@ def test_auto_scan():
         auto_scan_embed=True,
         auto_scan_max_images=1,
     )
-    stats_d = scan_and_register(cfg_limit, db, mock_client)
+    print(f"    统计: {scan_and_register(cfg_limit, db, mock_client)}")
     cup = db.get_object("cup_001")
     assert cup is not None
     assert (
@@ -457,6 +465,11 @@ def test_auto_scan():
 #  主入口
 # ====================================================================== #
 if __name__ == "__main__":
+    # 初始化日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
     print("=" * 60)
     print("  物体识别模块 (object_recognition) 测试")
     print("=" * 60)
@@ -471,17 +484,15 @@ if __name__ == "__main__":
         traceback.print_exc()
         print("\n  提示: pip install sqlite-vec numpy")
 
-    # 测试 2: 嵌入模型（需要 GPU）
+    # 测试 2: 云端嵌入服务
     try:
-        test_embedding_model()
+        test_remote_embedding_service()
     except Exception as e:
-        print(f"\n  ✗ 嵌入模型测试失败: {e}")
+        print(f"\n  ✗ 云端嵌入服务测试失败: {e}")
         import traceback
 
         traceback.print_exc()
-        print(
-            "\n  提示: 确认 GPU 可用，已安装 torch/transformers/bitsandbytes/accelerate"
-        )
+        print("\n  提示: 确认 remote_endpoint 可访问，且已安装 httpx")
 
     # 测试 3: 端到端
     try:

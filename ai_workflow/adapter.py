@@ -20,6 +20,7 @@ import logging
 import shlex
 from typing import Any, Dict, List, Optional
 
+from ai_workflow.bridge import first_text_part, text_parts
 from ai_workflow.state import (
     WorkflowState,
     create_initial_state,
@@ -257,13 +258,29 @@ def parse_request(request_data: Any) -> WorkflowState:
 
 def _extract_prompt(data: Dict[str, Any]) -> str:
     """从 llm_content 中提取文本 prompt"""
-    llm_content = data.get("llm_content")
-    if not isinstance(llm_content, list) or not llm_content:
+    parts = text_parts(data)
+    if not parts:
         return ""
 
-    parts = llm_content[0].get("part", [])
-    prompts = []
+    primary_part = first_text_part(data)
+    if primary_part is not None:
+        primary_params = primary_part.get("parameter", {})
+        primary_text = str(primary_part.get("content_text", "") or "").strip()
+        if primary_text and (
+            primary_part is not parts[0]
+            or isinstance(primary_params, dict)
+            and any(
+                key in primary_params
+                for key in (
+                    "function_id",
+                    "resume_from_review",
+                    "resume_global_state_review",
+                )
+            )
+        ):
+            return primary_text
 
+    prompts = []
     for part in parts:
         if part.get("content_type") == "text":
             text = part.get("content_text", "").strip()

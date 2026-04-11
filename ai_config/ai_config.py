@@ -15,7 +15,7 @@ import threading
 
 from typing import Any, Dict, Optional
 
-from ai_config.ai import AIConfig
+from ai_config.ai_types import AIConfig
 
 # ---------------------------------------------------------------------------
 # 模块级缓存

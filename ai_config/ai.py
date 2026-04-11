@@ -1,7 +1,5 @@
-"""
-AI 配置主类
-"""
+"""兼容层：从 ai_config.ai_config 导出 AIConfig。"""
 
+from ai_config.ai_config import AIConfig
 
-class AIConfig:
-    """AI 配置"""
+__all__ = ["AIConfig"]

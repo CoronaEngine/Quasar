@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from ai_modules.object_recognition.configs.dataclasses import (
+from ..configs.dataclasses import (
     EmbeddingModelConfig,
     RecognitionConfig,
     VectorDBConfig,
@@ -50,6 +50,11 @@ def _load_recognition_config(raw: Mapping[str, Any] | None) -> RecognitionConfig
         query_instruction=raw.get(
             "query_instruction",
             "Represent the query for retrieving relevant documents:",
+        ),
+        dashscope_api_key=raw.get("dashscope_api_key", ""),
+        dashscope_model=raw.get(
+            "dashscope_model",
+            "tongyi-embedding-vision-plus-2026-03-06",
         ),
         auto_scan_dir=raw.get("auto_scan_dir", ""),
         auto_scan_embed=_as_bool(raw.get("auto_scan_embed"), False),

@@ -55,8 +55,8 @@ class RequestContext:
     interface_type: str
 
 
-def first_text_part(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """从 llm_content 中获取当前用户消息的第一个文本类型 part。
+def user_message_parts(data: Dict[str, Any]) -> list[Dict[str, Any]]:
+    """返回当前用户消息的 part 列表。
 
     从后往前查找最后一条 role=user 的消息（与 extract_user_parts 保持一致），
     以正确处理前端携带完整对话历史的情况。
@@ -65,11 +65,11 @@ def first_text_part(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         data: 请求数据字典
 
     Returns:
-        文本 part 字典或 None
+        part 列表
     """
     llm_content = data.get("llm_content", [])
     if not isinstance(llm_content, list) or not llm_content:
-        return None
+        return []
 
     # 从后往前找最后一条 user 消息
     for entry in reversed(llm_content):
@@ -77,26 +77,70 @@ def first_text_part(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             continue
         if entry.get("role") == "user":
             parts = entry.get("part", [])
-            if not isinstance(parts, list):
-                continue
-            for part in parts:
-                if isinstance(part, dict) and part.get("content_type") == "text":
-                    return part
+            if isinstance(parts, list):
+                return [part for part in parts if isinstance(part, dict)]
+            continue
 
     # 兜底：直接取 llm_content[0]（llm_content 无 role 字段时）
-    parts = llm_content[0].get("part", [])
+    first_entry = llm_content[0]
+    if not isinstance(first_entry, dict):
+        return []
+
+    parts = first_entry.get("part", [])
     if not isinstance(parts, list):
+        return []
+    return [part for part in parts if isinstance(part, dict)]
+
+
+def text_parts(data: Dict[str, Any]) -> list[Dict[str, Any]]:
+    """返回当前用户消息中的所有文本 part。"""
+    return [
+        part
+        for part in user_message_parts(data)
+        if part.get("content_type") == "text"
+    ]
+
+
+def first_text_part(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """返回当前用户消息中最适合承载工作流指令/提示词的文本 part。
+
+    优先级：
+    1. 已显式绑定 function_id 的文本 part
+    2. 任意 slash 指令文本 part（允许命令不在首个 text part）
+    3. 第一个非空文本 part
+    4. 第一个文本 part
+    """
+    parts = text_parts(data)
+    if not parts:
         return None
+
     for part in parts:
-        if isinstance(part, dict) and part.get("content_type") == "text":
+        params = part.get("parameter", {})
+        if isinstance(params, dict) and "function_id" in params:
             return part
-    return None
+
+    for index, part in enumerate(parts):
+        text = str(part.get("content_text", "") or "").strip()
+        if text and COMMAND_PATTERN.match(text):
+            if index > 0:
+                logger.debug(
+                    "Workflow command found in non-leading text part: index=%s, text=%s",
+                    index,
+                    text,
+                )
+            return part
+
+    for part in parts:
+        if str(part.get("content_text", "") or "").strip():
+            return part
+
+    return parts[0]
 
 
 def extract_text(data: Dict[str, Any]) -> str:
     """从请求数据中提取纯文本
 
-    从第一个文本 part 中获取内容文本。
+    优先提取最可能承载工作流指令/提示词的文本 part。
 
     Args:
         data: 请求数据字典
@@ -246,6 +290,8 @@ def inject_function_id_and_prompt(
 
 __all__ = [
     "RequestContext",
+    "user_message_parts",
+    "text_parts",
     "first_text_part",
     "extract_text",
     "parse_command",

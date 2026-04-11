@@ -1,293 +1,274 @@
 """
-物体识别模块 —— Qwen3-VL-Embedding 嵌入客户端
+物体识别模块 —— 云端嵌入客户端（Dashscope SDK）
 
-封装 Qwen3-VL-Embedding 模型的加载、推理、向量融合逻辑。
-支持:
-- 8B / 2B 两种模型尺寸
-- 4-bit nf4 量化 + Flash Attention 2
-- Matryoshka 维度切换 (1024 / 512 / 256)
-- 多图 + 文本的混合输入融合为单一嵌入向量
-- 非对称指令（存储侧 vs 查询侧）
-
-依赖:
-    pip install torch transformers bitsandbytes accelerate
+本模块通过 dashscope.MultiModalEmbedding SDK 调用通义嵌入服务，
+不包含任何本地模型加载、GPU 推理或量化逻辑。
 """
 
 from __future__ import annotations
 
-import os
+from abc import ABC, abstractmethod
+import base64
 import logging
 import threading
-from typing import List, Optional
+from http import HTTPStatus
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ai_modules.object_recognition.configs.dataclasses import EmbeddingModelConfig
+from ..configs.dataclasses import RecognitionConfig
 
 logger = logging.getLogger(__name__)
 
-# 禁用 Hugging Face Hub 联网请求，使用本地缓存的模型文件
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
+_CLIENT_INSTANCES: Dict[Tuple[str, str, Optional[int]], "DashscopeEmbeddingClient"] = {}
+_CLIENT_LOCK = threading.Lock()
 
-# 全局模型单例及其锁
-_EMBEDDER_INSTANCE: Optional["Qwen3VLEmbeddingClient"] = None
-_EMBEDDER_LOCK = threading.Lock()
+# Dashscope 支持的图片格式
+_SUPPORTED_IMAGE_EXTS = frozenset(
+    {"jpg", "jpeg", "png", "webp", "gif", "bmp", "tiff", "tif"}
+)
 
 
-class Qwen3VLEmbeddingClient:
+def _image_to_data_uri(image_path: str) -> str:
+    """将本地图片文件转换为 base64 data URI。"""
+    path = Path(image_path)
+    ext = path.suffix.lstrip(".").lower()
+    if ext == "jpg":
+        ext = "jpeg"
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    return f"data:image/{ext};base64,{b64}"
+
+
+def _build_input(
+    image_paths: Optional[List[str]],
+    text: Optional[str],
+    instruction: Optional[str],
+) -> List[dict]:
     """
-    Qwen3-VL-Embedding 嵌入模型客户端。
+    构造 Dashscope MultiModalEmbedding 的 input 列表。
 
-    全局单例，首次调用时加载模型，后续复用。
-    支持将多张图片 + 可选文本融合为单一嵌入向量。
+    - instruction 非空时拼接到文本前缀（以空格分隔）
+    - 单图用 "image" 字段，多图用 "multi_images" 字段
+    - instruction 单独有效时直接作为文本传入
     """
+    effective_text: str = ""
+    if instruction and text:
+        effective_text = f"{instruction} {text}"
+    elif instruction:
+        effective_text = instruction
+    elif text:
+        effective_text = text
 
-    def __init__(self, config: EmbeddingModelConfig) -> None:
-        """
-        初始化嵌入模型客户端。
+    item: dict = {}
+    if effective_text:
+        item["text"] = effective_text
 
-        参数:
-            config: 嵌入模型配置
-        """
-        self.config = config
-        self._model = None
-        self._lock = threading.Lock()
-        self._inference_lock = threading.Lock()
+    if image_paths:
+        data_uris = [_image_to_data_uri(p) for p in image_paths]
+        if len(data_uris) == 1:
+            item["image"] = data_uris[0]
+        else:
+            item["multi_images"] = data_uris
 
-    def _load_model(self) -> None:
-        """懒加载模型（首次调用时触发）"""
-        if self._model is not None:
-            return
+    return [item]
 
-        with self._lock:
-            if self._model is not None:
-                return
 
-            logger.info(
-                f"正在加载 Qwen3-VL-Embedding 模型: "
-                f"size={self.config.model_size}, "
-                f"path={self.config.model_path}, "
-                f"4bit={self.config.use_4bit}, "
-                f"flash_attn={self.config.use_flash_attention}"
-            )
+class DashscopeEmbeddingClient:
+    """通过 Dashscope SDK 生成多模态嵌入向量。"""
 
-            try:
-                import torch
-                from ai_tools.qwen3_vl_embedding import Qwen3VLEmbedder
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        output_dim: Optional[int] = None,
+    ) -> None:
+        self._api_key = api_key
+        self._model = model
+        self._output_dim = output_dim
 
-                # 构建量化配置
-                model_kwargs = {
-                    "device_map": self.config.device_map,
-                    "torch_dtype": torch.bfloat16,
-                }
-
-                # 4-bit 量化配置
-                if self.config.use_4bit:
-                    from transformers import BitsAndBytesConfig
-
-                    quantization_config = BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_quant_type="nf4",
-                        bnb_4bit_use_double_quant=True,
-                        bnb_4bit_compute_dtype=torch.bfloat16,
-                    )
-                    model_kwargs["quantization_config"] = quantization_config
-                    logger.info("已启用 4-bit nf4 量化 (double_quant + bfloat16)")
-
-                # Flash Attention 2
-                if self.config.use_flash_attention:
-                    model_kwargs["attn_implementation"] = "flash_attention_2"
-                    logger.info("已启用 Flash Attention 2")
-
-                # 加载模型
-                self._model = Qwen3VLEmbedder(
-                    model_name_or_path=self.config.model_path,
-                    **model_kwargs,
-                )
-
-                logger.info(
-                    f"Qwen3-VL-Embedding 模型加载完成 "
-                    f"(output_dim={self.config.output_dim})"
-                )
-
-            except ImportError as e:
-                raise RuntimeError(
-                    f"无法导入 Qwen3-VL-Embedding: {e}\n"
-                    f"请确认已安装所需依赖: pip install torch transformers bitsandbytes accelerate"
-                ) from e
-            except Exception as e:
-                raise RuntimeError(
-                    f"加载 Qwen3-VL-Embedding 模型失败: {e}"
-                ) from e
+    # ── 公共接口 ──────────────────────────────────────────────────────────────
 
     def embed_for_storage(
         self,
         image_paths: List[str],
         text: str = "",
+        instruction: Optional[str] = None,
     ) -> np.ndarray:
-        """
-        存储侧嵌入：将多张图片（+ 可选文本描述）融合为单一向量。
-
-        使用非对称指令 "Represent this document for retrieval:"
-
-        参数:
-            image_paths: 图片路径列表（最多 6 张六面图）
-            text:        可选的文字描述
-
-        返回:
-            归一化后的嵌入向量 (numpy array, shape=[output_dim])
-        """
-        self._load_model()
-
+        """生成存储侧（文档侧）嵌入向量。"""
         if not image_paths and not text:
             raise ValueError("存储嵌入至少需要提供图片或文字描述")
-
-        # 构建输入 —— 所有图片 + 文本放入同一个 dict 的 image/text 字段
-        input_dict = {
-            "instruction": "Represent this document for retrieval:",
-        }
-
-        # 图片列表（支持 0~6 张）
-        if image_paths:
-            input_dict["image"] = self._resolve_image_paths(image_paths)
-
-        # 文本描述
-        if text:
-            input_dict["text"] = text
-
-        # 调用模型推理（返回归一化后的 torch.Tensor）
-        with self._inference_lock:
-            embeddings = self._model.process([input_dict], normalize=True)
-
-        # 取第一个结果，转为 numpy
-        vec = embeddings[0].cpu().float().numpy()
-
-        # Matryoshka 维度截断（取前 output_dim 维）
-        if self.config.output_dim < vec.shape[0]:
-            vec = vec[: self.config.output_dim]
-
-        # 截断后重新归一化
-        vec = self._normalize(vec)
-
-        logger.debug(
-            f"存储侧嵌入完成: images={len(image_paths)}, "
-            f"text_len={len(text)}, dim={vec.shape}"
-        )
-        return vec
+        input_data = _build_input(image_paths, text, instruction)
+        return self._call(input_data, error_prefix="存储侧嵌入失败")
 
     def embed_for_query(
         self,
         image_paths: Optional[List[str]] = None,
         text: Optional[str] = None,
+        instruction: Optional[str] = None,
     ) -> np.ndarray:
-        """
-        查询侧嵌入：将查询图片（+ 可选文本）融合为查询向量。
-
-        使用非对称指令 "Represent the query for retrieving relevant documents:"
-
-        参数:
-            image_paths: 查询图片路径列表（0~6 张）
-            text:        查询文字描述
-
-        返回:
-            归一化后的查询向量 (numpy array, shape=[output_dim])
-        """
-        self._load_model()
-
+        """生成查询侧嵌入向量。"""
         if not image_paths and not text:
             raise ValueError("查询嵌入至少需要提供图片或文字描述")
+        input_data = _build_input(image_paths, text, instruction)
+        return self._call(input_data, error_prefix="查询侧嵌入失败")
 
-        input_dict = {
-            "instruction": "Represent the query for retrieving relevant documents:",
+    # ── 内部实现 ──────────────────────────────────────────────────────────────
+
+    def _call(self, input_data: list, error_prefix: str) -> np.ndarray:
+        """调用 Dashscope MultiModalEmbedding 并解析返回向量。"""
+        import dashscope
+
+        kwargs: dict = {
+            "api_key": self._api_key,
+            "model": self._model,
+            "input": input_data,
+            "enable_fusion": True,
         }
+        if self._output_dim is not None:
+            kwargs["dimension"] = self._output_dim
 
-        if image_paths:
-            input_dict["image"] = self._resolve_image_paths(image_paths)
+        resp = dashscope.MultiModalEmbedding.call(**kwargs)
 
-        if text:
-            input_dict["text"] = text
+        if resp.status_code != HTTPStatus.OK:
+            raise RuntimeError(
+                f"{error_prefix}: status_code={resp.status_code}, "
+                f"model={self._model}, message={getattr(resp, 'message', '')}"
+            )
 
-        with self._inference_lock:
-            embeddings = self._model.process([input_dict], normalize=True)
+        return self._parse_response(resp, error_prefix)
 
-        vec = embeddings[0].cpu().float().numpy()
+    def _parse_response(self, resp, error_prefix: str) -> np.ndarray:
+        """从 Dashscope 响应中提取并校验向量。"""
+        try:
+            raw_vec = resp.output["embeddings"][0]["embedding"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(
+                f"{error_prefix}: 无法从响应中提取向量, output={resp.output}"
+            ) from exc
 
-        # Matryoshka 维度截断
-        if self.config.output_dim < vec.shape[0]:
-            vec = vec[: self.config.output_dim]
+        vec = np.array(raw_vec, dtype=np.float32)
 
-        vec = self._normalize(vec)
-
-        logger.debug(
-            f"查询侧嵌入完成: images={len(image_paths or [])}, "
-            f"text_len={len(text or '')}, dim={vec.shape}"
-        )
+        if vec.ndim != 1 or vec.shape[0] == 0:
+            raise RuntimeError(
+                f"{error_prefix}: 返回无效向量维度 shape={vec.shape}"
+            )
+        if self._output_dim is not None and vec.shape[0] != self._output_dim:
+            raise RuntimeError(
+                f"{error_prefix}: 返回维度 {vec.shape[0]} 与配置维度 {self._output_dim} 不一致"
+            )
         return vec
 
-    # ------------------------------------------------------------------ #
-    #  内部辅助方法
-    # ------------------------------------------------------------------ #
 
-    @staticmethod
-    def _resolve_image_paths(image_paths: List[str]) -> List[str]:
-        """
-        解析图片路径，确保格式正确。
+class EmbeddingProvider(ABC):
+    """嵌入向量提供者抽象接口。"""
 
-        支持:
-        - 本地文件路径（自动转为绝对路径并验证存在性）
-        - HTTP(S) URL（直接透传）
-        - data: URI（直接透传）
-        """
-        resolved = []
-        for path in image_paths:
-            if not path:
-                continue
-            # HTTP(S) URL 或 data: URI 直接使用
-            if path.startswith(("http://", "https://", "data:")):
-                resolved.append(path)
-            else:
-                # 本地文件路径
-                abs_path = os.path.abspath(path)
-                if not os.path.isfile(abs_path):
-                    logger.warning(f"图片文件不存在，已跳过: {abs_path}")
-                    continue
-                resolved.append(abs_path)
+    @abstractmethod
+    def embed_for_storage(
+        self,
+        image_paths: List[str],
+        text: str = "",
+        instruction: Optional[str] = None,
+    ) -> np.ndarray:
+        ...
 
-        if not resolved:
-            logger.warning("解析后无有效图片路径")
-
-        return resolved
-
-    @staticmethod
-    def _normalize(vec: np.ndarray) -> np.ndarray:
-        """L2 归一化向量"""
-        norm = np.linalg.norm(vec)
-        if norm < 1e-12:
-            logger.warning("嵌入向量范数接近零，跳过归一化")
-            return vec
-        return vec / norm
+    @abstractmethod
+    def embed_for_query(
+        self,
+        image_paths: Optional[List[str]] = None,
+        text: Optional[str] = None,
+        instruction: Optional[str] = None,
+    ) -> np.ndarray:
+        ...
 
 
-def get_embedding_client(config: EmbeddingModelConfig) -> Qwen3VLEmbeddingClient:
-    """
-    获取全局嵌入模型客户端单例（线程安全）。
+class RemoteEmbeddingProvider(EmbeddingProvider):
+    """基于 Dashscope SDK 的嵌入提供者。"""
 
-    参数:
-        config: 嵌入模型配置
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        output_dim: Optional[int] = None,
+    ) -> None:
+        self._client = get_embedding_client(
+            api_key=api_key,
+            model=model,
+            output_dim=output_dim,
+        )
 
-    返回:
-        Qwen3VLEmbeddingClient 单例实例
-    """
-    global _EMBEDDER_INSTANCE
-    if _EMBEDDER_INSTANCE is None:
-        with _EMBEDDER_LOCK:
-            if _EMBEDDER_INSTANCE is None:
-                _EMBEDDER_INSTANCE = Qwen3VLEmbeddingClient(config)
-                logger.info("嵌入模型客户端单例已创建")
-    return _EMBEDDER_INSTANCE
+    def embed_for_storage(
+        self,
+        image_paths: List[str],
+        text: str = "",
+        instruction: Optional[str] = None,
+    ) -> np.ndarray:
+        return self._client.embed_for_storage(
+            image_paths=image_paths,
+            text=text,
+            instruction=instruction,
+        )
+
+    def embed_for_query(
+        self,
+        image_paths: Optional[List[str]] = None,
+        text: Optional[str] = None,
+        instruction: Optional[str] = None,
+    ) -> np.ndarray:
+        return self._client.embed_for_query(
+            image_paths=image_paths,
+            text=text,
+            instruction=instruction,
+        )
+
+
+def get_embedding_client(
+    api_key: str,
+    model: str,
+    output_dim: Optional[int] = None,
+) -> DashscopeEmbeddingClient:
+    """获取 Dashscope 嵌入客户端单例（按 api_key/model/output_dim 缓存）。"""
+    key = (api_key, model, output_dim)
+    instance = _CLIENT_INSTANCES.get(key)
+    if instance is not None:
+        return instance
+
+    with _CLIENT_LOCK:
+        instance = _CLIENT_INSTANCES.get(key)
+        if instance is None:
+            instance = DashscopeEmbeddingClient(
+                api_key=api_key,
+                model=model,
+                output_dim=output_dim,
+            )
+            _CLIENT_INSTANCES[key] = instance
+            logger.info(
+                "Dashscope 嵌入客户端已创建: model=%s, output_dim=%s",
+                model,
+                output_dim,
+            )
+    return instance
+
+
+def build_provider(recognition_cfg: RecognitionConfig) -> EmbeddingProvider:
+    """根据 RecognitionConfig 构建 Dashscope EmbeddingProvider 实例。"""
+    logger.info(
+        "使用 Dashscope 嵌入提供者: model=%s, dim=%d",
+        recognition_cfg.dashscope_model,
+        recognition_cfg.embedding.output_dim,
+    )
+    return RemoteEmbeddingProvider(
+        api_key=recognition_cfg.dashscope_api_key,
+        model=recognition_cfg.dashscope_model,
+        output_dim=recognition_cfg.embedding.output_dim,
+    )
 
 
 __all__ = [
-    "Qwen3VLEmbeddingClient",
+    "DashscopeEmbeddingClient",
+    "EmbeddingProvider",
+    "RemoteEmbeddingProvider",
     "get_embedding_client",
+    "build_provider",
 ]

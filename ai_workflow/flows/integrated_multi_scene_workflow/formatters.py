@@ -10,6 +10,48 @@ from .helpers import to_display_url
 NO_OUTPUT: FormatterFunc = lambda _data, _state: []
 
 
+def format_generate_image_progress_parts(
+    *,
+    item_name: str,
+    image_url: str,
+    done_count: int,
+    total_count: int,
+    error_message: str = "",
+) -> List[Dict[str, Any]]:
+    """格式化单张图片生成完成时的流式输出。"""
+    if error_message:
+        text = (
+            f"## 图片生成进度\n已完成 **{done_count}/{total_count}** 项\n"
+            f"- {item_name}: 生成失败（{error_message}）"
+        )
+    else:
+        text = (
+            f"## 图片生成进度\n已完成 **{done_count}/{total_count}** 项\n"
+            f"- {item_name}: 图片已生成"
+        )
+
+    parts: List[Dict[str, Any]] = [
+        {
+            "content_type": "text",
+            "content_text": text,
+            "content_url": "",
+            "parameter": {},
+        }
+    ]
+
+    if image_url:
+        parts.append(
+            {
+                "content_type": "image",
+                "content_text": item_name,
+                "content_url": to_display_url(image_url),
+                "parameter": {},
+            }
+        )
+
+    return parts
+
+
 def format_human_review_parts(
     data: Dict[str, Any],
     _state: MultiSceneWorkflowState,

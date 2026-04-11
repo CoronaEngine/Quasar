@@ -11,7 +11,11 @@ from .formatters import format_aggregate_parts
 logger = logging.getLogger(__name__)
 
 
-@stream_output_node("integrated", format_aggregate_parts)
+@stream_output_node(
+    "integrated",
+    format_aggregate_parts,
+    node_name="aggregate_result",
+)
 def aggregate_result_node(state: MultiSceneWorkflowState) -> Dict[str, Any]:
     """汇总物品清单、布局描述与生成图片，写入 global_assets。"""
     generated_images: Dict[str, str] = state.get("generated_images", {})

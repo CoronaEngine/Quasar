@@ -13,7 +13,11 @@ from .test_cases import get_test_case
 logger = logging.getLogger(__name__)
 
 
-@stream_output_node("integrated", format_human_review_parts)
+@stream_output_node(
+    "integrated",
+    format_human_review_parts,
+    node_name="human_review",
+)
 def human_review_node(state: MultiSceneWorkflowState) -> Dict[str, Any]:
     """Human-in-the-loop 审核节点。"""
     metadata = state.get("metadata", {})
