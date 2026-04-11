@@ -112,8 +112,8 @@ class WorkflowState(BaseWorkflowState, total=False):
     # 最终输出
     output_parts: List[Dict[str, Any]]
 
-    # 中间数据（各工作流自定义 key-value）
-    intermediate: Dict[str, Any]
+    # 中间数据（各工作流自定义 key-value），使用 reducer 深度合并以保留跨节点数据
+    intermediate: Annotated[Dict[str, Any], deep_merge_dict]
 
     # 元数据透传
     metadata: Dict[str, Any]
@@ -144,7 +144,7 @@ class MultiSceneWorkflowState(BaseWorkflowState, total=False):
     approved_elements: List[Dict[str, str]]
     generated_images: Dict[str, str]
     layout_text: str
-    intermediate: Dict[str, Any]
+    intermediate: Annotated[Dict[str, Any], deep_merge_dict]
     metadata: Dict[str, Any]
 
 
@@ -156,7 +156,7 @@ class ModelRetrievalWorkflowState(BaseWorkflowState, total=False):
     approved_elements: List[Dict[str, str]]
     generated_images: Dict[str, str]
     model_results: List[Dict[str, Any]]
-    intermediate: Dict[str, Any]
+    intermediate: Annotated[Dict[str, Any], deep_merge_dict]
     metadata: Dict[str, Any]
     six_view_images: Optional[Dict[str, str]]
     six_view_images: Dict[str, Any]
@@ -168,7 +168,7 @@ class SceneCompositionWorkflowState(BaseWorkflowState, total=False):
 
     function_id: int
     prompt: str
-    intermediate: Dict[str, Any]
+    intermediate: Annotated[Dict[str, Any], deep_merge_dict]
     metadata: Dict[str, Any]
 
 

@@ -31,9 +31,24 @@ def review_scene_node(state) -> Dict[str, Any]:
             },
         }
 
-    # 截图输出目录 = scene.json 所在目录下 /review_screenshots/
-    output_dir = str(Path(scene_json_path).parent / "review_screenshots") if scene_json_path else ""
+    # 截图目录：优先使用 capture_screenshots 节点写入的路径，否则推断默认位置
+    review_screenshot_dir = intermediate.get("review_screenshot_dir", "")
+    if not review_screenshot_dir:
+        output_dir = str(Path(scene_json_path).parent / "review_screenshots") if scene_json_path else ""
+    else:
+        output_dir = review_screenshot_dir
     scene_description = prompt or f"场景名: {scene_name}"
+
+    # 目录不存在或没有 PNG 时直接跳过（--test 模式下无渲染截图）
+    if not output_dir or not Path(output_dir).is_dir() or not any(
+        p.name.lower().endswith(".png") for p in Path(output_dir).iterdir()
+    ):
+        logger.info("review_scene: 截图目录不存在或无 PNG，跳过审查 (output_dir=%s)", output_dir)
+        return {
+            "intermediate": {
+                "review_result": {"overall": "SKIPPED", "score": -1, "issues": ["无截图，跳过审查"]},
+            },
+        }
 
     logger.info("review_scene: 调用 scene_rationality_review (output_dir=%s)", output_dir)
 

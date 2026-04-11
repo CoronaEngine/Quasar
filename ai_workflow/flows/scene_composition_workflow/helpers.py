@@ -19,7 +19,16 @@ def get_tool(name: str) -> Any:
 
         load_tools(get_ai_config())
         tools = registry.list_tools()
-    return {t.name: t for t in tools}.get(name)
+    tool = {t.name: t for t in tools}.get(name)
+    # 工具已注册但目标工具缺失（可能由模块导入失败导致注册中断），强制重新发现
+    if tool is None and tools:
+        from ai_tools.load_tools import load_tools
+
+        load_tools(get_ai_config())
+        registry.discover(get_ai_config(), force=True)
+        tools = registry.list_tools()
+        tool = {t.name: t for t in tools}.get(name)
+    return tool
 
 
 def parse_tool_result(raw_result: Any) -> Dict[str, Any]:
@@ -104,10 +113,19 @@ def parse_review_result(raw_result: Any) -> Dict[str, Any]:
         parts = parsed.get("llm_content", [{}])[0].get("part", [])
         for part in parts:
             text = part.get("content_text", "")
-            if text:
+            if not text:
+                continue
+            try:
                 data = json.loads(text)
-                if "overall" in data:
-                    return data
-    except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
+            except json.JSONDecodeError:
+                continue
+            # 工具返回 {"status":..., "review": {"overall":...}} 结构
+            review = data.get("review") if isinstance(data, dict) else None
+            if isinstance(review, dict) and "overall" in review:
+                return review
+            # 兼容 overall 直接在顶层的情况
+            if isinstance(data, dict) and "overall" in data:
+                return data
+    except (KeyError, IndexError, TypeError, ValueError):
         pass
     return {"error": "场景审查结果解析失败"}

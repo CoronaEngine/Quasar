@@ -15,6 +15,33 @@ logger = logging.getLogger(__name__)
 @stream_output_node("integrated", NO_OUTPUT)
 def collect_models_node(state) -> Dict[str, Any]:
     """读取上游 model_retrieval 工作流存入的模型结果，转换为放置所需的 items 列表。"""
+    metadata = state.get("metadata", {})
+
+    # --test 模式：注入测试数据，绕过上游 model_retrieval 依赖
+    if metadata.get("workflow_test"):
+        from .test_cases import DEFAULT_MODELS, DEFAULT_PROMPT
+        logger.info("collect_models: --test 模式，注入 %d 个默认测试模型", len(DEFAULT_MODELS))
+        placement_items = [
+            {
+                "object_id": m["name"],
+                "name": m["name"],
+                "local_path": m["path"],
+            }
+            for m in DEFAULT_MODELS
+        ]
+        # 若 state.prompt 为空，自动填入默认设计方案
+        test_state_updates: Dict[str, Any] = {
+            "intermediate": {
+                "placement_items": placement_items,
+                "total_models": len(DEFAULT_MODELS),
+                "valid_models": len(DEFAULT_MODELS),
+                "skipped_models": 0,
+            },
+        }
+        if not state.get("prompt"):
+            test_state_updates["prompt"] = DEFAULT_PROMPT
+        return test_state_updates
+
     global_assets = state.get("global_assets", {})
     model_retrieval = global_assets.get("model_retrieval", {})
     model_results: List[Dict[str, Any]] = model_retrieval.get("model_results", [])

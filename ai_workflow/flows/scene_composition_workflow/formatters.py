@@ -34,9 +34,12 @@ def format_composition_result_parts(data: Dict[str, Any], state) -> List[Dict[st
         overall = review.get("overall", "N/A")
         score = review.get("score", "N/A")
         lines.append("")
-        lines.append(f"### 场景审查: {overall} (评分: {score})")
-        for issue in review.get("issues", []):
-            lines.append(f"  - {issue}")
+        if overall in ("SKIPPED", "N/A"):
+            lines.append("### 场景审查: 已跳过（无截图）")
+        else:
+            lines.append(f"### 场景审查: {overall} (评分: {score})")
+            for issue in review.get("issues", []):
+                lines.append(f"  - {issue}")
 
     return [
         {

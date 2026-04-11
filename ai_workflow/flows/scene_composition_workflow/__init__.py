@@ -5,12 +5,13 @@
   1. collect_models — 从 global_assets.model_retrieval 提取可用模型列表
   2. compose_scene — 调用 place_scene_from_items 生成 scene.json 布局
   3. import_to_engine — 将 actor 逐一导入运行中的引擎场景
-  4. review_scene — 调用 VLM 对场景进行合理性审查
-  5. output_result — 汇总结果写入 global_assets.scene_composition
+  4. capture_screenshots — 从多角度拍摄场景全貌截图
+  5. review_scene — 调用 VLM 对场景进行合理性审查
+  6. output_result — 汇总结果写入 global_assets.scene_composition
 
 DAG 拓扑：
   START → collect_models → compose_scene → import_to_engine
-       → review_scene → output_result → END
+       → capture_screenshots → review_scene → output_result → END
 
 保持对外接口约定（function_id、WORKFLOWS / WORKFLOW_COMMANDS 导出）。
 """
@@ -24,6 +25,7 @@ from langgraph.graph import END, START, StateGraph
 from ai_workflow.executor import register_workflow_checkpoints
 from ai_workflow.state import SceneCompositionWorkflowState
 
+from .capture_screenshots import capture_screenshots_node
 from .collect_models import collect_models_node
 from .compose_scene import compose_scene_node
 from .constants import SCENE_COMPOSITION_FUNCTION_ID
@@ -42,13 +44,15 @@ def build_scene_composition_workflow() -> "CompiledStateGraph":
     graph.add_node("collect_models", collect_models_node)
     graph.add_node("compose_scene", compose_scene_node)
     graph.add_node("import_to_engine", import_to_engine_node)
+    graph.add_node("capture_screenshots", capture_screenshots_node)
     graph.add_node("review_scene", review_scene_node)
     graph.add_node("output_result", output_result_node)
 
     graph.add_edge(START, "collect_models")
     graph.add_edge("collect_models", "compose_scene")
     graph.add_edge("compose_scene", "import_to_engine")
-    graph.add_edge("import_to_engine", "review_scene")
+    graph.add_edge("import_to_engine", "capture_screenshots")
+    graph.add_edge("capture_screenshots", "review_scene")
     graph.add_edge("review_scene", "output_result")
     graph.add_edge("output_result", END)
 

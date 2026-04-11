@@ -134,15 +134,16 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 def _deterministic_layout(room_size: List[float], count: int, *, margin: float, row_z: float) -> List[Dict[str, Any]]:
     if not room_size or len(room_size) < 3:
         room_size = [5.0, 3.0, 5.0]
-    L, W, _H = float(room_size[0]), float(room_size[1]), float(room_size[2])
+    # room_size = [X_length, Z_depth, Y_height]（Y 为高度，Z 为深度）
+    X_len, Z_dep, _Y_ht = float(room_size[0]), float(room_size[1]), float(room_size[2])
 
-    x_lo = -L / 2.0 + margin
-    x_hi = L / 2.0 - margin
+    x_lo = -X_len / 2.0 + margin
+    x_hi = X_len / 2.0 - margin
     if x_hi < x_lo:
-        x_lo, x_hi = -L / 2.0, L / 2.0
+        x_lo, x_hi = -X_len / 2.0, X_len / 2.0
 
-    z_lo = -W / 2.0 + margin
-    z_hi = W / 2.0 - margin
+    z_lo = -Z_dep / 2.0 + margin
+    z_hi = Z_dep / 2.0 - margin
     z = _clamp(float(row_z), z_lo, z_hi) if z_hi >= z_lo else 0.0
 
     if count <= 0:
@@ -233,10 +234,10 @@ class PlacementItem(BaseModel):
     file_name: Optional[str] = Field(None, description="Preferred file name with extension")
     local_path: Optional[str] = Field(None, description="Existing local model file path (preferred if exists)")
 
-    # 可选：上游若提供布局，覆盖规则布局
-    pos: Optional[List[float]] = Field(None, description="override pos [x,y,z]")
-    rot: Optional[List[float]] = Field(None, description="override rot [x,y,z]")
-    scale: Optional[List[float]] = Field(None, description="override scale [x,y,z]")
+    # 可选：上游若提供布局，覆盖规则布局（坐标系：X左右，Y高度，Z深度，Y=0为地面）
+    pos: Optional[List[float]] = Field(None, description="override pos [x, y, z]，Y=0 为地面")
+    rot: Optional[List[float]] = Field(None, description="override rot [rx, ry, rz] 度")
+    scale: Optional[List[float]] = Field(None, description="override scale [sx, sy, sz]")
 
 
 class DownloadModelInput(BaseModel):
@@ -249,7 +250,10 @@ class DownloadModelInput(BaseModel):
 class PlaceSceneInput(BaseModel):
     scene_path: str = Field(..., description="Output scene.json path (will be normalized into CoronaEngine)")
     scene_name: str = Field("scene", description="Scene name")
-    room_size: List[float] = Field(default_factory=lambda: [5, 3, 5], description="Room size (L,W,H)")
+    room_size: List[float] = Field(
+        default_factory=lambda: [5, 5, 3],
+        description="房间尺寸 [X_length, Z_depth, Y_height]，单位米。坐标系：X左右，Y高度，Z深度，Y=0 为地面。默认 [5, 5, 3]"
+    )
     items: List[PlacementItem] = Field(default_factory=list, description="Items")
 
 
