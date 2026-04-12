@@ -158,7 +158,10 @@ class WorkflowCommandRegistry:
                     continue
 
                 module_name = f"{package_name}.{module_info.name}"
-                module_path = flows_path / f"{module_info.name}.py"
+                if module_info.ispkg:
+                    module_path = flows_path / module_info.name / "__init__.py"
+                else:
+                    module_path = flows_path / f"{module_info.name}.py"
                 try:
                     module = importlib.import_module(module_name)
                     workflow_commands = getattr(module, "WORKFLOW_COMMANDS", None)

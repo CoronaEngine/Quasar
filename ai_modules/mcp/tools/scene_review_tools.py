@@ -188,7 +188,7 @@ def _build_scene_rationality_review_tool() -> StructuredTool:
 
             # --- 调用多模态 VLM ---
             response = client.chat.completions.create(
-                model="qwen-vl-max",
+                model="qwen3.5-plus",
                 messages=[{"role": "user", "content": content_list}],
                 temperature=0.1,
             )

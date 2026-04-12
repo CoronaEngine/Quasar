@@ -20,9 +20,6 @@ from ai_modules.scene_placement.tools.loader import load_scene_placement_config
 
 logger = logging.getLogger(__name__)
 
-# === 观测点 1：模块是否被 import ===
-logger.info("[scene_placement] placement_tools imported, file=%s", __file__)
-
 
 # -------------------------
 # helpers
@@ -137,15 +134,16 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 def _deterministic_layout(room_size: List[float], count: int, *, margin: float, row_z: float) -> List[Dict[str, Any]]:
     if not room_size or len(room_size) < 3:
         room_size = [5.0, 3.0, 5.0]
-    L, W, _H = float(room_size[0]), float(room_size[1]), float(room_size[2])
+    # room_size = [X_length, Z_depth, Y_height]（Y 为高度，Z 为深度）
+    X_len, Z_dep, _Y_ht = float(room_size[0]), float(room_size[1]), float(room_size[2])
 
-    x_lo = -L / 2.0 + margin
-    x_hi = L / 2.0 - margin
+    x_lo = -X_len / 2.0 + margin
+    x_hi = X_len / 2.0 - margin
     if x_hi < x_lo:
-        x_lo, x_hi = -L / 2.0, L / 2.0
+        x_lo, x_hi = -X_len / 2.0, X_len / 2.0
 
-    z_lo = -W / 2.0 + margin
-    z_hi = W / 2.0 - margin
+    z_lo = -Z_dep / 2.0 + margin
+    z_hi = Z_dep / 2.0 - margin
     z = _clamp(float(row_z), z_lo, z_hi) if z_hi >= z_lo else 0.0
 
     if count <= 0:
@@ -172,30 +170,28 @@ def _ensure_vec3(x: Any, default: List[float]) -> List[float]:
     return default
 
 
-# ✅ 强制输出到 CoronaEngine 内部：<CoronaEngine>/Scenes/<scene_name>/scene.json
-def _find_coronaengine_root() -> Path:
-    # 1) 支持显式指定（可选）
-    env = (os.environ.get("CORONAENGINE_ROOT") or "").strip()
+def _get_active_project_path() -> Path:
+    """获取当前活跃项目路径，与编辑器场景系统保持一致。"""
+    try:
+        from CoronaCore.core.corona_editor import CoronaEditor
+        project_path = CoronaEditor.CoronaEngine.active_project_path
+        if project_path:
+            return Path(project_path)
+    except Exception:
+        pass
+    # 兜底：环境变量 > cwd
+    env = (os.environ.get("CORONAENGINE_PROJECT") or "").strip()
     if env:
         return Path(env)
-
-    # 2) 从当前文件向上找名为 CoronaEngine 的目录
-    p = Path(__file__).resolve()
-    for parent in p.parents:
-        if parent.name.lower() == "coronaengine":
-            return parent
-
-    # 3) 最后兜底（你机器上的固定路径；不存在也不致命，会在后面 mkdir 时抛）
-    return Path(r"F:\GitHub\CoronaEngine")
+    return Path(os.getcwd())
 
 
 def _normalize_scene_output_path(scene_path: str, scene_name: str) -> Path:
-    root = _find_coronaengine_root()
-    out_dir = root / "Scenes" / (scene_name or "scene")
+    project = _get_active_project_path().resolve()  # 强制转换为绝对路径，避免相对路径导致的读取失败
+    out_dir = project / "Scene"
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    # 统一文件名：scene.json（避免上游乱传导致到处写）
-    return out_dir / "scene.json"
+    fname = _safe_filename(scene_name or "scene") + ".json"
+    return (out_dir / fname).resolve()
 
 
 def _extract_first_file_path(env: Dict[str, Any]) -> Optional[str]:
@@ -238,10 +234,10 @@ class PlacementItem(BaseModel):
     file_name: Optional[str] = Field(None, description="Preferred file name with extension")
     local_path: Optional[str] = Field(None, description="Existing local model file path (preferred if exists)")
 
-    # 可选：上游若提供布局，覆盖规则布局
-    pos: Optional[List[float]] = Field(None, description="override pos [x,y,z]")
-    rot: Optional[List[float]] = Field(None, description="override rot [x,y,z]")
-    scale: Optional[List[float]] = Field(None, description="override scale [x,y,z]")
+    # 可选：上游若提供布局，覆盖规则布局（坐标系：X左右，Y高度，Z深度，Y=0为地面）
+    pos: Optional[List[float]] = Field(None, description="override pos [x, y, z]，Y=0 为地面")
+    rot: Optional[List[float]] = Field(None, description="override rot [rx, ry, rz] 度")
+    scale: Optional[List[float]] = Field(None, description="override scale [sx, sy, sz]")
 
 
 class DownloadModelInput(BaseModel):
@@ -254,7 +250,10 @@ class DownloadModelInput(BaseModel):
 class PlaceSceneInput(BaseModel):
     scene_path: str = Field(..., description="Output scene.json path (will be normalized into CoronaEngine)")
     scene_name: str = Field("scene", description="Scene name")
-    room_size: List[float] = Field(default_factory=lambda: [5, 3, 5], description="Room size (L,W,H)")
+    room_size: List[float] = Field(
+        default_factory=lambda: [5, 5, 3],
+        description="房间尺寸 [X_length, Z_depth, Y_height]，单位米。坐标系：X左右，Y高度，Z深度，Y=0 为地面。默认 [5, 5, 3]"
+    )
     items: List[PlacementItem] = Field(default_factory=list, description="Items")
 
 
@@ -379,8 +378,10 @@ def load_placement_tools(config: AIConfig) -> List[StructuredTool]:
 
                 actor_name = it.file_name or local_file.name
                 ext = local_file.suffix.lower().lstrip(".")
+                # actor 显示名去掉扩展名，避免引擎中出现 "模型名.glb" 的 actor 名
+                display_name = Path(actor_name).stem if actor_name else actor_name
                 actor = {
-                    "name": actor_name,
+                    "name": display_name,
                     "source_name": actor_name,
                     "path": _norm_path(local_file),
                     "type": ext,
@@ -394,21 +395,22 @@ def load_placement_tools(config: AIConfig) -> List[StructuredTool]:
             logger.info("[scene_placement] scene.json written: %s (size=%d)", str(sp), sp.stat().st_size)
 
             scene_text = sp.read_text(encoding="utf-8")
+            sp_str = _norm_path(sp)  # 使用 resolve() 后的绝对路径（正斜杠）
             parts = [
                 build_part(
                     content_type="text",
-                    content_text=f"✅ 已生成 scene.json\nscene_path: {str(sp)}\nactors: {len(created)}",
-                    parameter={"additional_type": ["placement_scene_path"], "scene_path": str(sp), "actors": created},
+                    content_text=f"✅ 已生成 scene.json\nscene_path: {sp_str}\nactors: {len(created)}",
+                    parameter={"additional_type": ["placement_scene_path"], "scene_path": sp_str, "actors": created},
                 ),
                 build_part(
                     content_type="file",
                     content_text=scene_text,
-                    parameter={"additional_type": ["placement_scene"], "name": "scene.json", "scene_path": str(sp)},
+                    parameter={"additional_type": ["placement_scene"], "name": "scene.json", "scene_path": sp_str},
                 ),
                 build_part(
                     content_type="text",
                     content_text="scene.json 内容如下（可直接复制保存）：\n\n```json\n" + scene_text + "\n```",
-                    parameter={"additional_type": ["placement_scene_inline_json"], "scene_path": str(sp)},
+                    parameter={"additional_type": ["placement_scene_inline_json"], "scene_path": sp_str},
                 ),
             ]
             return build_success_result(parts=parts).to_envelope(interface_type="media")

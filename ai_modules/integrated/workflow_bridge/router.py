@@ -183,6 +183,26 @@ def handle_normal_mode(
             build_non_loop_help_text(),
         )
 
+    # 优先尝试将斜杠命令解析为工作流（无需先进入循环模式）
+    if parsed is not None:
+        command, argument = parsed
+        function_id = resolve_workflow_command(command)
+        if function_id is not None:
+            logger.info(
+                "[workflow] 非循环模式命令 %s -> function_id=%s",
+                command,
+                function_id,
+            )
+            inject_function_id_and_prompt(ctx.data, function_id, argument)
+            result = stream_workflow_from_request(
+                ctx.data, interface_type=ctx.interface_type
+            )
+            if result is not None:
+                return inject_function_id_to_review_stream(
+                    result,
+                    normalize_int_function_id(function_id),
+                )
+
     logger.debug("[workflow] 尝试从请求中提取 function_id")
     function_id = normalize_int_function_id(extract_parameter(ctx.data, "function_id"))
     result = stream_workflow_from_request(ctx.data, interface_type=ctx.interface_type)

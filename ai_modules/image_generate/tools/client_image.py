@@ -64,9 +64,10 @@ class LingyaImageClient(BaseAPIClient):
     ) -> Tuple[str, str]:
         images_data = self._collect_image_data(image_urls)
 
+        masked_key = f"{self.api_key[:6]}***{self.api_key[-4:]}" if len(self.api_key) > 10 else "***"
         logger.info(
             "图像生成配置："
-            f"基础 URL: {self.base_url}, api_key: {self.api_key}"
+            f"基础 URL: {self.base_url}, api_key: {masked_key}"
         )
 
         return self._generate_request(
@@ -76,7 +77,7 @@ class LingyaImageClient(BaseAPIClient):
             image_size=image_size,
         )
 
-    @retry_operation(max_retries=1)
+    @retry_operation(max_retries=3, delay=2.0, backoff=2.0)
     def _generate_request(
         self,
         *,
@@ -104,7 +105,7 @@ class LingyaImageClient(BaseAPIClient):
 
         client = _get_image_http_client()
         response = client.post(
-            self.base_url, json=payload, headers=self.headers, timeout=150
+            self.base_url, json=payload, headers=self.headers, timeout=180
         )
         response.raise_for_status()
         return self._parse_response(response.json())

@@ -89,7 +89,14 @@ def get_store_tool():
 
 
 def get_3d_generate_tool():
-    """获取 3D 模型生成工具。"""
+    """获取 3D 模型生成工具。优先混元3D（需启用），回退 Rodin。"""
+    from ai_config.ai_config import get_ai_config
+    config = get_ai_config()
+    hunyuan_cfg = getattr(config, 'hunyuan3d', None)
+    if hunyuan_cfg is not None and getattr(hunyuan_cfg, 'enable', False):
+        tool = get_tool("hunyuan_generate_3d")
+        if tool is not None:
+            return tool
     return get_tool("rodin_generate_3d")
 
 

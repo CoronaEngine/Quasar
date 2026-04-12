@@ -234,6 +234,19 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     )
 
 # -----------------------------------------------------------------------
+# 3D 生成工具（混元3D）
+# -----------------------------------------------------------------------
+    from ai_modules.three_d_generate.tools.model_tools import load_hunyuan3d_tools
+
+    registry.register_loader(
+        loader=load_hunyuan3d_tools,
+        category=ToolCategory.SCENE,
+        dependencies=[],
+        requires_config=True,
+        source="tools.hunyuan3d_tools",
+    )
+
+# -----------------------------------------------------------------------
 #  物体识别工具（Qwen3-VL-Embedding + sqlite-vec）
 # -----------------------------------------------------------------------
     from ai_modules.object_recognition.base import load_recognition_tools
@@ -249,17 +262,20 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
 # -----------------------------------------------------------------------
 #  场景拆解工具（breakdown）
 # -----------------------------------------------------------------------
-    from ai_modules.scene_breakdown.tools.scene_breakdown_tools import load_scene_breakdown_tools
+    try:
+        from ai_modules.scene_breakdown.tools.scene_breakdown_tools import load_scene_breakdown_tools
 
-    registry.register_loader(
-        loader=load_scene_breakdown_tools,
-        category=ToolCategory.SCENE,
-        dependencies=[
-            # ToolDependency(DependencyType.CONFIG_PROVIDER, provider="rodin"),
-        ],
-        requires_config=True,
-        source="tools.scene_breakdown_tools",
-    )
+        registry.register_loader(
+            loader=load_scene_breakdown_tools,
+            category=ToolCategory.SCENE,
+            dependencies=[
+                # ToolDependency(DependencyType.CONFIG_PROVIDER, provider="rodin"),
+            ],
+            requires_config=True,
+            source="tools.scene_breakdown_tools",
+        )
+    except ImportError as e:
+        logger.warning("scene_breakdown tools not available (skipped): %s", e)
 
 # -----------------------------------------------------------------------
 #  场景布局json工具（placement）
