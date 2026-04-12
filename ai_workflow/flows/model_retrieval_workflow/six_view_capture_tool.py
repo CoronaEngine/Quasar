@@ -6,8 +6,13 @@ from typing import Any, Dict
 from config.paths_config import get_project_screenshots_dir
 from CoronaCore.core.managers import scene_manager
 from ai_workflow.streaming import stream_output_node
+from ai_workflow.flows.model_retrieval_workflow.temp_capture_storage import (
+    build_temp_capture_root,
+    make_temp_capture_path,
+    save_to_temp_then_move,
+)
 from .formatters import NO_OUTPUT
-from .helpers import get_tool
+from .helpers import get_tool, wait_mesh_then_resolve_model_file
 
 logger = logging.getLogger(__name__)
 
@@ -21,38 +26,6 @@ def _resolve_active_scene():
     if routes:
         return scene_manager.get(routes[0])
     return None
-
-
-def _resolve_model_file(model_path: str) -> str:
-    """【核心新增】：解析相对路径并找出真实的 3D 模型文件 (.glb/.obj 等)"""
-    from CoronaCore.core.corona_editor import CoronaEditor
-
-    CoronaEngine = CoronaEditor.CoronaEngine
-
-    # 1. 相对路径转绝对路径
-    if os.path.isabs(model_path):
-        resolved_path = model_path
-    else:
-        project_path = getattr(CoronaEngine, "active_project_path", "")
-        if project_path:
-            resolved_path = os.path.join(project_path, model_path)
-        else:
-            resolved_path = model_path
-
-    # 2. 如果是文件，直接返回
-    SUPPORTED_EXTS = {".obj", ".dae", ".glb", ".gltf", ".fbx"}
-    if os.path.isfile(resolved_path):
-        if any(resolved_path.lower().endswith(ext) for ext in SUPPORTED_EXTS):
-            return resolved_path
-        return ""
-
-    # 3. 如果是目录，寻找第一个支持的模型文件
-    if os.path.isdir(resolved_path):
-        for ext in SUPPORTED_EXTS:
-            for f in sorted(os.listdir(resolved_path)):
-                if f.lower().endswith(ext):
-                    return os.path.join(resolved_path, f)
-    return ""
 
 
 @stream_output_node("integrated", NO_OUTPUT)
@@ -73,6 +46,8 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
         return {"six_view_images": {}}
 
     all_saved_views = {}
+    # 临时设计：先写入 ASCII 临时路径，再由 Python 搬运到最终中文路径。
+    temp_capture_root = build_temp_capture_root()
 
     for result in model_results:
         if result.get("error"):
@@ -84,12 +59,19 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
         actor_name = result.get("object_id") or result.get("item_name")
         raw_model_path = result.get("model_path")
+        parameter = result.get("parameter", {}) if isinstance(result.get("parameter"), dict) else {}
+        has_mesh_pending = bool(parameter.get("has_mesh_pending", False))
+        wait_object_id = str(parameter.get("object_id") or actor_name or "")
 
         if not actor_name or not raw_model_path:
             continue
 
-        # 解析真正的 .glb/.obj 文件路径
-        final_model_path = _resolve_model_file(raw_model_path)
+        # 先做 mesh 完成门禁，再解析真正的 .glb/.obj 文件路径
+        final_model_path = wait_mesh_then_resolve_model_file(
+            raw_model_path=str(raw_model_path),
+            wait_object_id=wait_object_id,
+            has_mesh_pending=has_mesh_pending,
+        )
 
         # 确定截图的输出目录（放在原路径同级或子文件夹）
         if os.path.isabs(raw_model_path):
@@ -144,7 +126,7 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 continue
         elif not final_model_path:
             logger.warning(
-                f"[Workflow] 无法在 {raw_model_path} 及其子目录下找到受支持的 3D 模型文件 (.glb/.obj)，跳过。"
+                f"[Workflow] {actor_name} 截图前模型未就绪，无法在 {raw_model_path} 及其子目录下找到受支持的 3D 模型文件 (.glb/.obj)，跳过。"
             )
 
         if not scene.find_actor(actor_name):
@@ -232,18 +214,35 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 camera.set(position, fwd, up, fov)
                 time.sleep(0.15)
 
-                # 截图并保存字典（必须用同步版本，否则清理模型时渲染线程仍在写入会导致 SIGABRT）
+                # 先保存到 ASCII 临时目录，再由 Python 移动到最终路径。
                 filepath = os.path.join(output_dir, f"{view_name}.png")
-                camera.save_screenshot_sync(filepath)
-                view_dict[view_name] = filepath
+                temp_filepath = make_temp_capture_path(
+                    temp_capture_root,
+                    str(actor_name),
+                    view_name,
+                )
+                # 临时设计：规避 C++ PNG 写入中文路径失败的问题。
+                saved_filepath = save_to_temp_then_move(
+                    camera,
+                    temp_path=temp_filepath,
+                    final_path=filepath,
+                    actor_name=str(actor_name),
+                    view_name=view_name,
+                )
+                if saved_filepath:
+                    view_dict[view_name] = saved_filepath
 
             # 记录这 6 张图的结果
-            all_saved_views[actor_name] = view_dict
-            logger.info(
-                f"[Workflow] {actor_name} 标准六视图 (前后左右上下) 生成成功: 6 张"
-            )
-
-            result["six_views_dict"] = view_dict
+            if view_dict:
+                all_saved_views[actor_name] = view_dict
+                result["six_views_dict"] = view_dict
+                logger.info(
+                    "[Workflow] %s 六视图生成完成: 成功 %s/6",
+                    actor_name,
+                    len(view_dict),
+                )
+            else:
+                logger.error("[Workflow] %s 六视图生成失败: 0/6", actor_name)
 
         except Exception as e:
             logger.error(f"[Workflow] 截图执行崩溃: {e}", exc_info=True)

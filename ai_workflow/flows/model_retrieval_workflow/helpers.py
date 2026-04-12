@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -26,7 +28,6 @@ def _resolve_preview_part_url(part: Dict[str, Any]) -> str:
         if file_id:
             try:
                 from ai_media_resource import get_media_registry
-
                 resolved = str(get_media_registry().resolve(file_id) or "").strip()
                 if resolved:
                     return resolved
@@ -311,3 +312,87 @@ def build_placeholder_embedding(
     if norm > 1e-12:
         vec = vec / norm
     return vec
+
+
+def resolve_model_file(model_path: str) -> str:
+    """解析模型路径并返回可用的 3D 模型文件路径。"""
+    path_text = str(model_path or "").strip()
+    if not path_text:
+        return ""
+
+    if os.path.isabs(path_text):
+        resolved_path = path_text
+    else:
+        project_path = str(_get_active_project_path())
+        resolved_path = os.path.join(project_path, path_text) if project_path else path_text
+
+    supported_exts = {".obj", ".dae", ".glb", ".gltf", ".fbx"}
+    if os.path.isfile(resolved_path):
+        if any(resolved_path.lower().endswith(ext) for ext in supported_exts):
+            return resolved_path
+        return ""
+
+    if os.path.isdir(resolved_path):
+        for entry in sorted(os.listdir(resolved_path)):
+            _, ext = os.path.splitext(entry)
+            if ext.lower() in supported_exts:
+                return os.path.join(resolved_path, entry)
+
+    return ""
+
+
+def wait_mesh_then_resolve_model_file(
+    *,
+    raw_model_path: str,
+    wait_object_id: str,
+    has_mesh_pending: bool,
+    retry_times: int = 3,
+    retry_interval_seconds: float = 0.2,
+) -> str:
+    """在使用模型前等待后台 mesh 下载完成，并重试解析模型文件路径。"""
+    wait_for_pending_mesh(
+        parameter={"has_mesh_pending": has_mesh_pending, "object_id": wait_object_id},
+        fallback_object_id=wait_object_id,
+        stage="capture",
+        wait_reason="截图前门禁",
+    )
+
+    max_retry = max(1, int(retry_times))
+    for attempt in range(max_retry):
+        final_model_path = resolve_model_file(raw_model_path)
+        if final_model_path and os.path.exists(final_model_path):
+            return final_model_path
+
+        if attempt < max_retry - 1:
+            time.sleep(max(0.0, float(retry_interval_seconds)))
+
+    return ""
+
+
+def wait_for_pending_mesh(
+    *,
+    parameter: Dict[str, Any],
+    fallback_object_id: str,
+    stage: str,
+    wait_reason: str = "",
+) -> bool:
+    """当 parameter 标记 has_mesh_pending 时，阻塞等待后台 mesh 下载完成。"""
+    if not bool(parameter.get("has_mesh_pending", False)):
+        return False
+
+    wait_object_id = str(parameter.get("object_id") or fallback_object_id or "").strip()
+    if not wait_object_id:
+        return False
+
+    from ai_modules.three_d_generate.tools.model_tools import wait_for_mesh_ready
+
+    reason_suffix = f"（{wait_reason}）" if wait_reason else ""
+    logger.info(
+        "[Workflow][%s] %s 等待后台 mesh 下载完成%s...",
+        stage,
+        wait_object_id,
+        reason_suffix,
+    )
+    wait_for_mesh_ready(wait_object_id)
+    logger.info("[Workflow][%s] %s mesh 下载已完成", stage, wait_object_id)
+    return True

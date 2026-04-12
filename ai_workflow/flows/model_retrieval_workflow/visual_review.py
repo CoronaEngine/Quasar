@@ -7,6 +7,7 @@ from ai_models.base_pool import MediaCategory, OmniRequest, get_pool_registry
 
 from ai_workflow.streaming import stream_output_node
 from .formatters import NO_OUTPUT
+from .test_cases import get_test_case
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,54 @@ def _call_omni_visual_review(
     return str(result.metadata.get("analysis_result", "") or "").strip()
 
 
+def _get_mock_visual_review_reply(
+    state: Dict[str, Any],
+    result: Dict[str, Any],
+) -> str | None:
+    """在 workflow_test 模式下返回测试样例指定的视觉审查结果。"""
+    metadata = state.get("metadata", {}) or {}
+    if not metadata.get("workflow_test"):
+        return None
+
+    explicit_reply = str(result.get("mock_visual_review_reply", "") or "").strip()
+    if explicit_reply:
+        return explicit_reply
+
+    decision = str(result.get("mock_visual_review", "") or "").strip().upper()
+    if decision == "PASS":
+        return "PASS\n符合预期"
+    if decision == "FAIL":
+        reason = str(result.get("mock_visual_review_reason", "") or "未通过测试态视觉审查").strip()
+        return f"FAIL\n{reason}"
+
+    test_case = get_test_case(metadata.get("workflow_test_case", "default"))
+    expected_results = test_case.get("expected_model_results", [])
+    if not isinstance(expected_results, list):
+        return None
+
+    actor_name = str(result.get("item_name", "") or "").strip()
+    object_id = str(result.get("object_id", "") or "").strip()
+    for expected in expected_results:
+        if not isinstance(expected, dict):
+            continue
+        if (
+            str(expected.get("item_name", "") or "").strip() == actor_name
+            and str(expected.get("object_id", "") or "").strip() == object_id
+        ):
+            explicit_reply = str(expected.get("mock_visual_review_reply", "") or "").strip()
+            if explicit_reply:
+                return explicit_reply
+
+            decision = str(expected.get("mock_visual_review", "") or "").strip().upper()
+            if decision == "PASS":
+                return "PASS\n符合预期"
+            if decision == "FAIL":
+                reason = str(expected.get("mock_visual_review_reason", "") or "未通过测试态视觉审查").strip()
+                return f"FAIL\n{reason}"
+
+    return None
+
+
 @stream_output_node("integrated", NO_OUTPUT)
 def visual_review_node(state: Dict[str, Any]) -> Dict[str, Any]:
     model_results = state.get("model_results", [])
@@ -117,11 +166,13 @@ def visual_review_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 f"[Workflow] 正在通过 Omni 池将 {actor_name} 的六视图送入视觉大模型校验..."
             )
 
-            raw_reply = _call_omni_visual_review(
-                session_id=session_id,
-                prompt_text=prompt_text,
-                views_dict=views_dict,
-            )
+            raw_reply = _get_mock_visual_review_reply(state, result)
+            if raw_reply is None:
+                raw_reply = _call_omni_visual_review(
+                    session_id=session_id,
+                    prompt_text=prompt_text,
+                    views_dict=views_dict,
+                )
             reply_lines = [line.strip() for line in raw_reply.splitlines() if line.strip()]
             decision = reply_lines[0].upper() if reply_lines else "PASS"
             review_reason = reply_lines[1] if len(reply_lines) > 1 else raw_reply or "未提供原因"

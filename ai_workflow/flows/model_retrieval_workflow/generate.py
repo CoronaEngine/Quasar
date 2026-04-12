@@ -32,6 +32,7 @@ def _result_identity_key(item: Dict[str, Any]) -> tuple[str, str]:
 def _build_mock_generate_outputs(
     state: ModelRetrievalWorkflowState,
     retrieval_results: List[Dict[str, Any]],
+    pending_generation: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]] | None:
     """在 workflow_test 模式下根据测试样例直接构造生成阶段输出。"""
     metadata = state.get("metadata", {}) or {}
@@ -44,21 +45,43 @@ def _build_mock_generate_outputs(
         return None
 
     retrieval_keys = {
-        (str(item.get("item_name", "") or ""), str(item.get("object_id", "") or ""))
+        _result_identity_key(item)
         for item in retrieval_results
+        if isinstance(item, dict)
     }
+    pending_generation_by_key = {
+        _result_identity_key(task): task
+        for task in pending_generation
+        if isinstance(task, dict)
+    }
+    is_retry_round = bool(pending_generation_by_key)
 
     generated_results: List[Dict[str, Any]] = []
     for expected in expected_results:
-        key = (
-            str(expected.get("item_name", "") or ""),
-            str(expected.get("object_id", "") or ""),
-        )
+        key = _result_identity_key(expected)
         if key in retrieval_keys:
+            continue
+        if is_retry_round and key not in pending_generation_by_key:
             continue
         if expected.get("source") != "generation" and not expected.get("error"):
             continue
-        generated_results.append(dict(expected))
+
+        row = dict(expected)
+        retry_task = pending_generation_by_key.get(key)
+        if retry_task:
+            for field in (
+                "retry_count",
+                "review_reason",
+                "task_object_id",
+                "image_prompt",
+                "search_error",
+                "input_image_url",
+                "image_url",
+            ):
+                if field in retry_task:
+                    row[field] = retry_task[field]
+        row["source"] = "generation"
+        generated_results.append(row)
 
     if not generated_results:
         return None
@@ -191,7 +214,11 @@ def generate_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
         row for row in retained_results if str(row.get("source", "") or "") == "retrieval"
     ]
 
-    mock_generated = _build_mock_generate_outputs(state, retrieval_results)
+    mock_generated = _build_mock_generate_outputs(
+        state,
+        retrieval_results,
+        pending_generation,
+    )
     if mock_generated is not None:
         total_count = len(mock_generated)
         for index, row in enumerate(mock_generated, 1):

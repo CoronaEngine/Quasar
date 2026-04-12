@@ -12,6 +12,7 @@ from .helpers import (
     get_store_tool,
     normalize_object_id,
     parse_store_result,
+    wait_for_pending_mesh,
 )
 from .test_cases import get_test_case
 
@@ -112,8 +113,6 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
                 },
             }
 
-    from ai_modules.three_d_generate.tools.model_tools import wait_for_mesh_ready
-
     store_tool = get_store_tool()
     if not store_tool:
         logger.warning("[Workflow][register] store_object 工具不可用，全部标记失败")
@@ -149,14 +148,12 @@ def register_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
             row.get("parameter", {}) if isinstance(row.get("parameter"), dict) else {}
         )
 
-        if parameter.get("has_mesh_pending", False):
-            wait_object_id = parameter.get("object_id") or object_id
-            logger.info(
-                "[Workflow][register] %s 等待后台 mesh 下载完成（用于入库图片稳定化）...",
-                wait_object_id,
-            )
-            wait_for_mesh_ready(wait_object_id)
-            logger.info("[Workflow][register] %s mesh 下载已完成", wait_object_id)
+        wait_for_pending_mesh(
+            parameter=parameter,
+            fallback_object_id=str(object_id),
+            stage="register",
+            wait_reason="用于入库图片稳定化",
+        )
 
         six_view_paths = _collect_six_view_paths_from_dict(item.get("six_views_dict"))
         # 注：仅使用本轮 six_views_dict，不再从历史 state.six_view_images 回退查找
