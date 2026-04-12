@@ -3,8 +3,9 @@
 from pathlib import Path
 from typing import Any, Dict, List
 
+from ai_workflow.progress import publish_node_entries_event
 from ai_workflow.state import ModelRetrievalWorkflowState
-from ai_workflow.streaming import FormatterFunc
+from ai_workflow.streaming import FormatterFunc, build_node_dialogue_entry
 
 from .helpers import find_sibling_preview_image
 
@@ -46,44 +47,31 @@ def _normalize_url_key(url: str) -> str:
     if not text:
         return ""
 
-    lowered = text.lower()
-    if lowered.startswith("file://"):
+    if text.lower().startswith("file://"):
         text = text[7:]
 
     return text.replace("\\", "/").strip().lower()
+
+
+def _collect_list_field(container: Dict[str, Any], key: str, out: List[str]) -> None:
+    """将 container[key] (str 或 list) 中的元素追加到 out。"""
+    value = container.get(key)
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, list):
+        out.extend(str(item or "") for item in value)
 
 
 def _pick_displayable_preview_path(row: Dict[str, Any]) -> str:
     """优先从候选预览图中选择真正可显示的一条。"""
     candidates: List[str] = []
 
-    for source in (
-        row.get("preview_path", ""),
-        row.get("preview_paths", []),
-        row.get("image_paths", []),
-    ):
-        if isinstance(source, str):
-            candidates.append(source)
-        elif isinstance(source, list):
-            candidates.extend(str(item or "") for item in source)
+    _collect_list_field(row, "preview_paths", candidates)
+    _collect_list_field(row, "image_paths", candidates)
 
     parameter = row.get("parameter", {})
     if isinstance(parameter, dict):
-        nested_preview_path = parameter.get("preview_path", "")
-        if isinstance(nested_preview_path, str):
-            candidates.append(nested_preview_path)
-
-        nested_preview_paths = parameter.get("preview_paths", [])
-        if isinstance(nested_preview_paths, str):
-            candidates.append(nested_preview_paths)
-        elif isinstance(nested_preview_paths, list):
-            candidates.extend(str(item or "") for item in nested_preview_paths)
-
-        nested_image_paths = parameter.get("image_paths", [])
-        if isinstance(nested_image_paths, str):
-            candidates.append(nested_image_paths)
-        elif isinstance(nested_image_paths, list):
-            candidates.extend(str(item or "") for item in nested_image_paths)
+        _collect_list_field(parameter, "preview_paths", candidates)
 
     input_key = _normalize_url_key(str(row.get("input_image_url", "") or ""))
 
@@ -120,24 +108,22 @@ def _make_image_part(content_url: str, description: str = "") -> Dict[str, Any]:
     }
 
 
-def _select_preview_for_row(row: Dict[str, Any]) -> tuple[str, str]:
+def _select_preview_for_row(row: Dict[str, Any]) -> str:
     """按分支规则为一条结果选择前端展示图。"""
-    source = str(row.get("source", "") or "")
-    input_image_url = str(row.get("input_image_url", "") or "")
     preview_path = _pick_displayable_preview_path(row)
-
     if preview_path:
-        return preview_path, "preview_paths"
+        return preview_path
 
-    if source == "retrieval":
+    if str(row.get("source", "") or "") == "retrieval":
         model_dir_image = find_sibling_preview_image(str(row.get("model_path", "") or ""))
         if model_dir_image and _is_displayable_url(model_dir_image):
-            return model_dir_image, "model_dir_fallback"
+            return model_dir_image
 
+    input_image_url = str(row.get("input_image_url", "") or "")
     if input_image_url and _is_displayable_url(input_image_url):
-        return input_image_url, "input_image_fallback"
+        return input_image_url
 
-    return "", "none"
+    return ""
 
 
 def _count_stats(model_results: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -157,7 +143,7 @@ def _count_stats(model_results: List[Dict[str, Any]]) -> Dict[str, int]:
 
 
 def _append_preview_part(parts: List[Dict[str, Any]], row: Dict[str, Any]) -> None:
-    preview_image_url, _preview_source = _select_preview_for_row(row)
+    preview_image_url = _select_preview_for_row(row)
     if preview_image_url:
         parts.append(
             _make_image_part(
@@ -165,6 +151,20 @@ def _append_preview_part(parts: List[Dict[str, Any]], row: Dict[str, Any]) -> No
                 f"模型预览 - {row.get('item_name', '未知')}",
             )
         )
+
+
+def _format_progress_parts(
+    row: Dict[str, Any],
+    *,
+    title: str,
+    detail: str,
+    done_count: int,
+    total_count: int,
+) -> List[Dict[str, Any]]:
+    summary = f"## {title}\n已完成 **{done_count}/{total_count}** 项\n{detail}"
+    parts: List[Dict[str, Any]] = [_make_text_part(summary)]
+    _append_preview_part(parts, row)
+    return parts
 
 
 def _build_user_visible_parts(
@@ -273,52 +273,73 @@ def _build_checkpoint_items(model_results: List[Dict[str, Any]]) -> List[Dict[st
     return items
 
 
-def format_generate_progress_parts(
-    row: Dict[str, Any],
+def _detail_for_retrieve(row: Dict[str, Any], name: str) -> str:
+    error = str(row.get("search_error", "") or row.get("error", "") or "").strip()
+    if str(row.get("source", "") or "") == "retrieval" and not error:
+        return f"- {name}: 命中模型（ID: {row.get('object_id', '')}, 距离: {row.get('distance', 0):.4f}）"
+    if error:
+        return f"- {name}: 检索失败，转入生成（{error}）"
+    return f"- {name}: 未命中，转入生成"
+
+
+def _detail_for_generate(row: Dict[str, Any], name: str) -> str:
+    error = str(row.get("error", "") or "").strip()
+    if error:
+        return f"- {name}: 生成失败（{error}）"
+    return f"- {name}: 已生成新模型（{row.get('model_path', '')}）"
+
+
+def _detail_for_register(row: Dict[str, Any], name: str) -> str:
+    status = str(row.get("register_status", "skipped") or "skipped").lower()
+    if status == "inserted":
+        return f"- {name}: 新增入库成功"
+    if status == "updated":
+        return f"- {name}: 更新入库成功"
+    if status == "failed":
+        error = str(row.get("register_error", "") or row.get("error", "入库失败")).strip()
+        return f"- {name}: 入库失败（{error or '未知错误'}）"
+    return f"- {name}: 跳过入库"
+
+
+_PROGRESS_FORMATTERS: Dict[str, tuple[str, Any]] = {
+    "retrieve": ("模型检索进度", _detail_for_retrieve),
+    "generate": ("3D 生成进度", _detail_for_generate),
+    "register": ("模型入库进度", _detail_for_register),
+}
+
+
+def publish_node_progress(
+    state: ModelRetrievalWorkflowState,
+    result: Dict[str, Any],
     *,
+    node_name: str,
     done_count: int,
     total_count: int,
-) -> List[Dict[str, Any]]:
-    """为单个生成任务构建流式进度输出。"""
-    name = row.get("item_name", "未知")
-    error = str(row.get("error", "") or "").strip()
-
-    if error:
-        summary = f"## 3D 生成进度\n已完成 **{done_count}/{total_count}** 项\n- {name}: 生成失败（{error}）"
-    else:
-        model_path = row.get("model_path", "")
-        summary = (
-            f"## 3D 生成进度\n已完成 **{done_count}/{total_count}** 项\n"
-            f"- {name}: 已生成新模型（{model_path}）"
-        )
-
-    parts: List[Dict[str, Any]] = [_make_text_part(summary)]
-    _append_preview_part(parts, row)
-    return parts
-
-
-def format_retrieve_or_generate_checkpoint_parts(
-    data: Dict[str, Any],
-    _state: ModelRetrievalWorkflowState,
-) -> List[Dict[str, Any]]:
-    """为 retrieve_or_generate 检查点输出可视化摘要。"""
-    model_results = data.get("model_results", [])
-    if not isinstance(model_results, list) or not model_results:
-        return []
-
-    parts, stats = _build_user_visible_parts(
-        model_results=model_results,
-        title="## 模型检索阶段结果",
-        summary_prefix="已处理",
-        include_register_status=False,
+) -> None:
+    """统一发布单个任务的流式进度输出。"""
+    title, detail_fn = _PROGRESS_FORMATTERS[node_name]
+    name = result.get("item_name", "未知")
+    parts = _format_progress_parts(
+        result,
+        title=title,
+        detail=detail_fn(result, name),
+        done_count=done_count,
+        total_count=total_count,
     )
-    if parts:
-        parts[0]["parameter"] = {
-            "checkpoint": "retrieve_or_generate",
-            "summary": stats,
-            "items": _build_checkpoint_items(model_results),
-        }
-    return parts
+    if not parts:
+        return
+
+    entry = build_node_dialogue_entry(
+        "integrated",
+        parts,
+        node_name=node_name,
+        function_id=state.get("function_id"),
+    )
+    publish_node_entries_event(
+        str(state.get("session_id", "default") or "default"),
+        node_name,
+        [entry],
+    )
 
 
 def format_result_checkpoint_parts(
@@ -328,29 +349,25 @@ def format_result_checkpoint_parts(
     """为 format_result 检查点输出面向用户的最终可视化结果。"""
     model_results = state.get("model_results", [])
     mr_stats = data.get("global_assets", {}).get("model_retrieval", {})
+    stats = {
+        "total": len(model_results),
+        "retrieval_count": mr_stats.get("retrieval_count", 0),
+        "generation_count": mr_stats.get("generation_count", 0),
+        "error_count": mr_stats.get("error_count", 0),
+    }
 
     parts, _stats = _build_user_visible_parts(
         model_results=model_results,
         title="## 模型检索与 3D 生成结果",
         summary_prefix="总计",
         include_register_status=True,
-        stats_override={
-            "total": len(model_results),
-            "retrieval_count": mr_stats.get("retrieval_count", 0),
-            "generation_count": mr_stats.get("generation_count", 0),
-            "error_count": mr_stats.get("error_count", 0),
-        },
+        stats_override=stats,
     )
 
     if parts:
         parts[0]["parameter"] = {
             "checkpoint": "format_result",
-            "summary": {
-                "total": len(model_results),
-                "retrieval_count": mr_stats.get("retrieval_count", 0),
-                "generation_count": mr_stats.get("generation_count", 0),
-                "error_count": mr_stats.get("error_count", 0),
-            },
+            "summary": stats,
             "items": _build_checkpoint_items(model_results),
         }
 

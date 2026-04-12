@@ -26,7 +26,7 @@ import logging
 import os
 import sqlite3
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 # 全局数据库连接锁（sqlite 在多线程下需要序列化写入）
 _DB_LOCK = threading.Lock()
+_DB_INSTANCE_LOCK = threading.Lock()
+_DB_INSTANCES: Dict[Tuple[str, int], "VectorDB"] = {}
 
 
 class VectorDB:
@@ -472,6 +474,23 @@ class VectorDB:
             logger.debug("数据库连接已关闭")
 
 
+def get_vector_db(db_path: str, vector_dim: int = 1024) -> VectorDB:
+    """按 db_path 和 vector_dim 复用 VectorDB 实例。"""
+    normalized_path = os.path.abspath(db_path)
+    cache_key = (normalized_path, vector_dim)
+
+    instance = _DB_INSTANCES.get(cache_key)
+    if instance is not None:
+        return instance
+
+    with _DB_INSTANCE_LOCK:
+        instance = _DB_INSTANCES.get(cache_key)
+        if instance is None:
+            instance = VectorDB(db_path=normalized_path, vector_dim=vector_dim)
+            _DB_INSTANCES[cache_key] = instance
+    return instance
+
+
 # ====================================================================== #
 #  辅助函数
 # ====================================================================== #
@@ -505,5 +524,6 @@ def normalize_vector(vec: np.ndarray) -> np.ndarray:
 
 __all__ = [
     "VectorDB",
+    "get_vector_db",
     "normalize_vector",
 ]

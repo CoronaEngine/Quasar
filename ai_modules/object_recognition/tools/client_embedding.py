@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import base64
+from io import BytesIO
 import logging
 import threading
 from http import HTTPStatus
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+from PIL import Image, ImageOps
 
 from ..configs.dataclasses import RecognitionConfig
 
@@ -28,16 +30,108 @@ _CLIENT_LOCK = threading.Lock()
 _SUPPORTED_IMAGE_EXTS = frozenset(
     {"jpg", "jpeg", "png", "webp", "gif", "bmp", "tiff", "tif"}
 )
+_MAX_IMAGE_BYTES = 1024 * 1024
+_MIN_IMAGE_SIDE = 256
+_JPEG_QUALITY_STEPS = (90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30)
+_RESIZE_SCALE_STEPS = (1.0, 0.85, 0.7, 0.55, 0.4, 0.3, 0.2)
+
+
+def _normalize_image_ext(ext: str) -> str:
+    """规范化图片扩展名。"""
+    normalized = ext.lower().lstrip(".")
+    if normalized == "jpg":
+        normalized = "jpeg"
+    if normalized not in _SUPPORTED_IMAGE_EXTS:
+        raise ValueError(f"不支持的图片格式: {ext}")
+    return normalized
+
+
+def _ensure_rgb_image(image: Image.Image) -> Image.Image:
+    """将图片转换为适合 JPEG 压缩的 RGB。"""
+    if image.mode == "RGB":
+        return image
+
+    has_alpha = image.mode in {"RGBA", "LA"}
+    has_palette_alpha = image.mode == "P" and "transparency" in image.info
+    if has_alpha or has_palette_alpha:
+        background = Image.new("RGBA", image.size, (255, 255, 255, 255))
+        composited = Image.alpha_composite(background, image.convert("RGBA"))
+        return composited.convert("RGB")
+
+    return image.convert("RGB")
+
+
+def _encode_jpeg_bytes(image: Image.Image, quality: int) -> bytes:
+    """将图片编码为 JPEG 二进制。"""
+    buffer = BytesIO()
+    image.save(
+        buffer,
+        format="JPEG",
+        quality=quality,
+        optimize=True,
+        progressive=True,
+    )
+    return buffer.getvalue()
+
+
+def _compress_image_bytes(path: Path, original_size: int) -> Tuple[bytes, str]:
+    """将图片压缩到 1MB 以内，返回压缩后的二进制和扩展名。"""
+    with Image.open(path) as source:
+        source.load()
+        working = ImageOps.exif_transpose(source)
+
+    working = _ensure_rgb_image(working)
+    base_width, base_height = working.size
+    best_bytes = b""
+
+    for scale in _RESIZE_SCALE_STEPS:
+        resized_width = max(_MIN_IMAGE_SIDE, int(base_width * scale))
+        resized_height = max(_MIN_IMAGE_SIDE, int(base_height * scale))
+        resized_size = (resized_width, resized_height)
+
+        if resized_size == working.size:
+            candidate_image = working
+        else:
+            candidate_image = working.resize(
+                resized_size,
+                Image.Resampling.LANCZOS,
+            )
+
+        for quality in _JPEG_QUALITY_STEPS:
+            candidate_bytes = _encode_jpeg_bytes(candidate_image, quality)
+            if not best_bytes or len(candidate_bytes) < len(best_bytes):
+                best_bytes = candidate_bytes
+            if len(candidate_bytes) <= _MAX_IMAGE_BYTES:
+                logger.info(
+                    "嵌入图片已压缩: path=%s, original_bytes=%s, compressed_bytes=%s, scale=%.2f, quality=%s",
+                    path,
+                    original_size,
+                    len(candidate_bytes),
+                    scale,
+                    quality,
+                )
+                return candidate_bytes, "jpeg"
+
+    compressed_size = len(best_bytes)
+    raise RuntimeError(
+        f"图片压缩失败: path={path}, original_bytes={original_size}, compressed_bytes={compressed_size}"
+    )
+
+
+def _read_image_payload(path: Path) -> Tuple[bytes, str]:
+    """读取图片二进制；超出 1MB 时自动压缩。"""
+    ext = _normalize_image_ext(path.suffix)
+    raw_bytes = path.read_bytes()
+    if len(raw_bytes) <= _MAX_IMAGE_BYTES:
+        return raw_bytes, ext
+    return _compress_image_bytes(path, len(raw_bytes))
 
 
 def _image_to_data_uri(image_path: str) -> str:
     """将本地图片文件转换为 base64 data URI。"""
     path = Path(image_path)
-    ext = path.suffix.lstrip(".").lower()
-    if ext == "jpg":
-        ext = "jpeg"
-    with open(path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("utf-8")
+    payload, ext = _read_image_payload(path)
+    b64 = base64.b64encode(payload).decode("utf-8")
     return f"data:image/{ext};base64,{b64}"
 
 

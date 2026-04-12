@@ -5,15 +5,14 @@ import logging
 import time
 from typing import Any, Dict, List
 
-from ai_workflow.progress import publish_node_entries_event
 from ai_workflow.state import ModelRetrievalWorkflowState
-from ai_workflow.streaming import build_node_dialogue_entry, stream_output_node
+from ai_workflow.streaming import stream_output_node
 from ai_tools.context import reset_current_session, set_current_session
 
 from .constants import GENERATION_MAX_WORKERS
 from .formatters import (
     NO_OUTPUT,
-    format_generate_progress_parts,
+    publish_node_progress,
 )
 from .helpers import get_3d_generate_tool, parse_3d_result
 from .test_cases import get_test_case
@@ -21,32 +20,13 @@ from .test_cases import get_test_case
 logger = logging.getLogger(__name__)
 
 
-def _publish_generate_progress(
-    state: ModelRetrievalWorkflowState,
-    result: Dict[str, Any],
-    *,
-    done_count: int,
-    total_count: int,
-) -> None:
-    parts = format_generate_progress_parts(
-        result,
-        done_count=done_count,
-        total_count=total_count,
-    )
-    if not parts:
-        return
-
-    entry = build_node_dialogue_entry(
-        "integrated",
-        parts,
-        node_name="generate",
-        function_id=state.get("function_id"),
-    )
-    publish_node_entries_event(
-        str(state.get("session_id", "default") or "default"),
-        "generate",
-        [entry],
-    )
+def _result_identity_key(item: Dict[str, Any]) -> tuple[str, str]:
+    """为任务/结果生成稳定标识，便于重试回环保留已有结果。"""
+    task_object_id = str(
+        item.get("task_object_id") or item.get("object_id") or ""
+    ).strip()
+    item_name = str(item.get("item_name") or "").strip()
+    return task_object_id, item_name
 
 
 def _build_mock_generate_outputs(
@@ -102,9 +82,14 @@ def generate_single_item(
     result: Dict[str, Any] = {
         "item_name": name,
         "object_id": object_id,
+        "task_object_id": task.get("task_object_id", object_id),
         "task_index": task.get("task_index", 0),
         "input_image_url": image_url,
     }
+    if "retry_count" in task:
+        result["retry_count"] = task.get("retry_count", 0)
+    if task.get("image_prompt"):
+        result["image_prompt"] = task.get("image_prompt")
 
     search_error = str(task.get("search_error", "") or "").strip()
 
@@ -185,24 +170,41 @@ def generate_single_item(
 def generate_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
     """执行生成阶段，并与检索命中结果合并。"""
     pending_generation = state.get("intermediate", {}).get("pending_generation", [])
-    retrieval_results = state.get("model_results", [])
+    existing_results = state.get("model_results", [])
 
-    if not isinstance(retrieval_results, list):
-        retrieval_results = []
+    if not isinstance(existing_results, list):
+        existing_results = []
+
+    retry_keys = {
+        _result_identity_key(task)
+        for task in pending_generation
+        if isinstance(task, dict)
+    }
+    retained_results = [
+        row
+        for row in existing_results
+        if isinstance(row, dict)
+        and str(row.get("source", "") or "") != "pending_generation"
+        and _result_identity_key(row) not in retry_keys
+    ]
+    retrieval_results = [
+        row for row in retained_results if str(row.get("source", "") or "") == "retrieval"
+    ]
 
     mock_generated = _build_mock_generate_outputs(state, retrieval_results)
     if mock_generated is not None:
         total_count = len(mock_generated)
         for index, row in enumerate(mock_generated, 1):
-            _publish_generate_progress(
+            publish_node_progress(
                 state,
                 row,
+                node_name="generate",
                 done_count=index,
                 total_count=total_count,
             )
 
         results = sorted(
-            retrieval_results + mock_generated,
+            retained_results + mock_generated,
             key=lambda item: item.get("task_index", 0),
         )
         return {
@@ -216,9 +218,13 @@ def generate_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
     if not isinstance(pending_generation, list) or not pending_generation:
         return {
             "model_results": sorted(
-                retrieval_results,
+                retained_results,
                 key=lambda item: item.get("task_index", 0),
-            )
+            ),
+            "intermediate": {
+                **state.get("intermediate", {}),
+                "pending_generation": [],
+            },
         }
 
     generate_tool = get_3d_generate_tool()
@@ -255,15 +261,16 @@ def generate_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
 
             generated_results.append(result)
             completed_count += 1
-            _publish_generate_progress(
+            publish_node_progress(
                 state,
                 result,
+                node_name="generate",
                 done_count=completed_count,
                 total_count=len(pending_generation),
             )
 
     results = sorted(
-        retrieval_results + generated_results,
+        retained_results + generated_results,
         key=lambda item: item.get("task_index", 0),
     )
 

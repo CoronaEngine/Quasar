@@ -7,8 +7,9 @@
   3. 若复核失败则回到检索/生成节点重试
 
 DAG 拓扑：
-    START → dispatch_node → retrieve_or_generate_node → register_node
+    START → dispatch_node → retrieve_node → generate_node
           → six_view_capture_tool_node → visual_review_node
+          → register_node
           → format_result_node → END
 
 保持对外接口约定（function_id、WORKFLOWS / WORKFLOW_COMMANDS 导出）。
@@ -26,8 +27,9 @@ from ai_workflow.state import ModelRetrievalWorkflowState
 from .constants import MODEL_RETRIEVAL_FUNCTION_ID
 from .dispatch import dispatch_node
 from .format_result import format_result_node
+from .generate import generate_node
 from .register import register_node
-from .retrieve_or_generate import retrieve_or_generate_node
+from .retrieve import retrieve_node
 from .six_view_capture_tool import six_view_capture_tool_node
 from .visual_review import visual_review_node
 
@@ -43,8 +45,8 @@ if TYPE_CHECKING:
 def check_if_needs_retry(state: ModelRetrievalWorkflowState) -> str:
     """动态路由决策器。"""
     if state.get("needs_retry"):
-        return "retrieve_or_generate"
-    return "format_result"
+        return "generate"
+    return "register"
 
 
 def build_model_retrieval_workflow() -> "CompiledStateGraph":
@@ -52,26 +54,29 @@ def build_model_retrieval_workflow() -> "CompiledStateGraph":
     graph = StateGraph(ModelRetrievalWorkflowState)
 
     graph.add_node("dispatch", dispatch_node)
-    graph.add_node("retrieve_or_generate", retrieve_or_generate_node)
+    graph.add_node("retrieve", retrieve_node)
+    graph.add_node("generate", generate_node)
     graph.add_node("register", register_node)
     graph.add_node("capture_views", six_view_capture_tool_node)
     graph.add_node("visual_review", visual_review_node)
     graph.add_node("format_result", format_result_node)
 
     graph.add_edge(START, "dispatch")
-    graph.add_edge("dispatch", "retrieve_or_generate")
-    graph.add_edge("retrieve_or_generate", "register")
-    graph.add_edge("register", "capture_views")
+    graph.add_edge("dispatch", "retrieve")
+    graph.add_edge("retrieve", "generate")
+    graph.add_edge("generate", "capture_views")
     graph.add_edge("capture_views", "visual_review")
 
     graph.add_conditional_edges(
         "visual_review",
         check_if_needs_retry,
         {
-            "retrieve_or_generate": "retrieve_or_generate",
-            "format_result": "format_result",
+            "generate": "generate",
+            "register": "register",
         },
     )
+
+    graph.add_edge("register", "format_result")
 
     graph.add_edge("format_result", END)
     graph.set_entry_point("dispatch")
@@ -90,7 +95,7 @@ WORKFLOW_COMMANDS: Dict[str, int] = {
 
 register_workflow_checkpoints(
     MODEL_RETRIEVAL_FUNCTION_ID,
-    {"retrieve_or_generate", "format_result"},
+    {"retrieve", "generate", "format_result"},
 )
 
 __all__ = [

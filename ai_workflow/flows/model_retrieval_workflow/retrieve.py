@@ -9,8 +9,8 @@ from ai_workflow.state import ModelRetrievalWorkflowState
 from ai_workflow.streaming import stream_output_node
 
 from .constants import SEARCH_MAX_WORKERS
-from .formatters import NO_OUTPUT
-from .helpers import get_search_tool
+from .formatters import NO_OUTPUT, publish_node_progress
+from .helpers import get_search_tool, parse_search_result
 from .test_cases import get_test_case
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,8 @@ def _build_mock_retrieve_outputs(
             ),
             **expected,
         }
+        if task.get("image_prompt") and not merged.get("image_prompt"):
+            merged["image_prompt"] = task.get("image_prompt")
 
         if merged.get("source") == "retrieval" and not merged.get("error"):
             retrieval_results.append(merged)
@@ -94,7 +96,10 @@ def retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, An
         "object_id": object_id,
         "task_index": task.get("task_index", 0),
         "input_image_url": image_url,
+        "task_object_id": task.get("task_object_id", object_id),
     }
+    if image_prompt:
+        result["image_prompt"] = image_prompt
 
     if not search_tool:
         result.update(
@@ -116,15 +121,12 @@ def retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, An
                 "top_k": 1,
             }
         )
-        
-        # 简化：工具已返回标准化hit字段，无需手动解析
-        hit = raw.get("hit", False)
-        best_match = raw.get("best_match")
-        error_msg = raw.get("status_info", "")
+
+        parsed_result = parse_search_result(raw)
         elapsed = time.perf_counter() - started_at
 
-        # 处理错误
-        if error_msg or "error_code" in raw:
+        error_msg = parsed_result.get("error", "")
+        if error_msg:
             logger.warning(
                 "[Workflow][retrieve] %s 检索失败，将降级生成: %s (elapsed=%.2fs)",
                 name,
@@ -140,7 +142,9 @@ def retrieve_single_item(task: Dict[str, Any], search_tool: Any) -> Dict[str, An
             )
             return result
 
-        # 处理是否命中
+        hit = parsed_result.get("hit", False)
+        best_match = parsed_result.get("best_match")
+
         if hit and best_match:
             image_paths = best_match.get("image_paths", [])
             if not isinstance(image_paths, list):
@@ -214,6 +218,20 @@ def retrieve_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
 
     mock_outputs = _build_mock_retrieve_outputs(state, tasks)
     if mock_outputs is not None:
+        mock_results = sorted(
+            list(mock_outputs.get("model_results", []))
+            + list(mock_outputs.get("intermediate", {}).get("pending_generation", [])),
+            key=lambda item: item.get("task_index", 0),
+        )
+        total_count = len(mock_results)
+        for index, row in enumerate(mock_results, 1):
+            publish_node_progress(
+                state,
+                row,
+                node_name="retrieve",
+                done_count=index,
+                total_count=total_count,
+            )
         return mock_outputs
 
     search_tool = get_search_tool()
@@ -234,6 +252,7 @@ def retrieve_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
             pool.submit(retrieve_single_item, task, search_tool): task
             for task in indexed_tasks
         }
+        completed_count = 0
         for future in concurrent.futures.as_completed(futures):
             task = futures[future]
             try:
@@ -249,6 +268,11 @@ def retrieve_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
                     "object_id": task.get("object_id", ""),
                     "task_index": task.get("task_index", 0),
                     "input_image_url": task.get("image_url", ""),
+                    "task_object_id": task.get(
+                        "task_object_id",
+                        task.get("object_id", ""),
+                    ),
+                    "image_prompt": task.get("image_prompt", ""),
                     "source": "pending_generation",
                     "search_status": "error",
                     "search_error": str(e),
@@ -258,6 +282,15 @@ def retrieve_node(state: ModelRetrievalWorkflowState) -> Dict[str, Any]:
                 retrieval_results.append(retrieved)
             else:
                 pending_generation.append(retrieved)
+
+            completed_count += 1
+            publish_node_progress(
+                state,
+                retrieved,
+                node_name="retrieve",
+                done_count=completed_count,
+                total_count=len(indexed_tasks),
+            )
 
     logger.info(
         "[Workflow][retrieve] 完成: 检索命中 %s, 待生成 %s",

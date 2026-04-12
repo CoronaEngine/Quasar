@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Optional
 
 from langchain_core.tools import StructuredTool
@@ -25,6 +26,10 @@ from .execution import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 自动扫描只在当前进程中执行一次，避免重复全量扫描目录。
+_AUTO_SCAN_INIT_LOCK = threading.Lock()
+_AUTO_SCAN_DONE = False
 
 
 # ====================================================================== #
@@ -95,21 +100,19 @@ def _tool_store_object(
 
     # 错误处理
     if "error" in result:
-        return build_error_result(error_message=result["error"]).to_envelope(
+        return build_error_result(error_message=result["error"]).to_dict(
             interface_type="object_recognition"
         )
 
     # 成功返回：返回标准化格式，供工作流直接使用
     parts = result.get("parts", [])
-    response = build_success_result(parts=parts).to_envelope(
+    response = build_success_result(parts=parts).to_dict(
         interface_type="object_recognition"
     )
 
-    # 注入标准化字段（供工作流使用，避免手动解析）
-    if isinstance(response, dict):
-        response["register_status"] = result.get("register_status", "inserted")
-        response["rowid"] = result.get("rowid")
-        response["object_id"] = object_id
+    response["register_status"] = result.get("register_status", "inserted")
+    response["rowid"] = result.get("rowid")
+    response["object_id"] = object_id
 
     return response
 
@@ -138,21 +141,19 @@ def _tool_search_object(
 
     # 错误处理
     if "error" in result:
-        return build_error_result(error_message=result["error"]).to_envelope(
+        return build_error_result(error_message=result["error"]).to_dict(
             interface_type="object_recognition"
         )
 
     # 成功返回：返回标准化格式，供工作流直接使用
     parts = result.get("parts", [])
-    response = build_success_result(parts=parts).to_envelope(
+    response = build_success_result(parts=parts).to_dict(
         interface_type="object_recognition"
     )
 
-    # 注入标准化字段（供工作流使用，避免手动解析）
-    if isinstance(response, dict):
-        response["hit"] = result.get("hit", False)
-        response["best_match"] = result.get("best_match")
-        response["all_matches"] = result.get("all_matches", [])
+    response["hit"] = result.get("hit", False)
+    response["best_match"] = result.get("best_match")
+    response["all_matches"] = result.get("all_matches", [])
 
     return response
 
@@ -183,6 +184,33 @@ def load_recognition_tools(config) -> list[StructuredTool]:
         return []
 
     logger.info("初始化物体识别工具")
+
+    # 尝试在工具加载阶段执行一次自动扫描入库。
+    # 失败时仅记录日志，不阻塞工具注册和后续使用。
+    global _AUTO_SCAN_DONE
+    if not _AUTO_SCAN_DONE:
+        with _AUTO_SCAN_INIT_LOCK:
+            if not _AUTO_SCAN_DONE:
+                try:
+                    from .auto_scan import scan_and_register
+                    from .client_embedding import build_provider
+                    from .vector_db import get_vector_db
+
+                    embedding_provider = build_provider(recognition_cfg)
+                    vector_db = get_vector_db(
+                        db_path=recognition_cfg.vector_db.db_path,
+                        vector_dim=recognition_cfg.vector_db.vector_dim,
+                    )
+                    scan_stats = scan_and_register(
+                        recognition_cfg=recognition_cfg,
+                        vector_db=vector_db,
+                        embedding_client=embedding_provider,
+                    )
+                    logger.info(f"物体目录自动扫描完成: {scan_stats}")
+                except Exception as e:
+                    logger.warning(f"物体目录自动扫描失败（不影响工具加载）: {e}")
+                finally:
+                    _AUTO_SCAN_DONE = True
 
     try:
         # 工具 1: 物体入库
