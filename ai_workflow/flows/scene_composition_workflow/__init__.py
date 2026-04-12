@@ -9,15 +9,24 @@
   5. review_scene — 调用 VLM 对场景进行合理性审查
   6. output_result — 汇总结果写入 global_assets.scene_composition
 
+审查后路由逻辑（_route_after_review）：
+  - layout_issue (且未超重试上限) → 回到 compose_scene，重新走布局
+  - object_issue (且未超重试上限) → 输出结果并携带 needs_model_regen=True 标记
+  - pass / 超出重试上限            → output_result
+
 DAG 拓扑：
   START → collect_models → compose_scene → import_to_engine
-       → capture_screenshots → review_scene → output_result → END
+       → capture_screenshots → review_scene
+       ↓ (conditional)
+       layout_issue → compose_scene（循环）
+       object_issue / pass → output_result → END
 
 保持对外接口约定（function_id、WORKFLOWS / WORKFLOW_COMMANDS 导出）。
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, TYPE_CHECKING
 
 from langgraph.graph import END, START, StateGraph
@@ -28,13 +37,37 @@ from ai_workflow.state import SceneCompositionWorkflowState
 from .capture_screenshots import capture_screenshots_node
 from .collect_models import collect_models_node
 from .compose_scene import compose_scene_node
-from .constants import SCENE_COMPOSITION_FUNCTION_ID
+from .constants import SCENE_COMPOSITION_FUNCTION_ID, MAX_SCENE_REVIEW_RETRIES
 from .import_to_engine import import_to_engine_node
 from .output_result import output_result_node
 from .review_scene import review_scene_node
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
+
+_logger = logging.getLogger(__name__)
+
+
+def _route_after_review(state) -> str:
+    """审查后路由：
+    - layout_issue → compose_scene（重新布局）
+    - object_issue → output_result（携带 needs_model_regen 标记，外部系统重新生成物体）
+    - pass / 超出重试上限 → output_result
+    """
+    intermediate = state.get("intermediate", {})
+    decision = intermediate.get("review_decision", "pass")
+    retry_count = intermediate.get("review_retry_count", 0)
+
+    if decision == "layout_issue" and retry_count <= MAX_SCENE_REVIEW_RETRIES:
+        _logger.info("route: 布局问题 → compose_scene (第 %d 次重试)", retry_count)
+        return "compose_scene"
+
+    if decision == "object_issue" and retry_count <= MAX_SCENE_REVIEW_RETRIES:
+        _logger.info("route: 物体问题 → output_result (needs_model_regen=True, retry=%d)", retry_count)
+        return "output_result"
+
+    _logger.info("route: 审查通过或已达重试上限 → output_result (decision=%s, retry=%d)", decision, retry_count)
+    return "output_result"
 
 
 def build_scene_composition_workflow() -> "CompiledStateGraph":
@@ -53,7 +86,14 @@ def build_scene_composition_workflow() -> "CompiledStateGraph":
     graph.add_edge("compose_scene", "import_to_engine")
     graph.add_edge("import_to_engine", "capture_screenshots")
     graph.add_edge("capture_screenshots", "review_scene")
-    graph.add_edge("review_scene", "output_result")
+    graph.add_conditional_edges(
+        "review_scene",
+        _route_after_review,
+        {
+            "compose_scene": "compose_scene",
+            "output_result": "output_result",
+        },
+    )
     graph.add_edge("output_result", END)
 
     graph.set_entry_point("collect_models")

@@ -24,6 +24,7 @@ def output_result_node(state) -> Dict[str, Any]:
     review_result = intermediate.get("review_result", {})
     total_models = intermediate.get("total_models", 0)
     valid_models = intermediate.get("valid_models", 0)
+    needs_model_regen = intermediate.get("needs_model_regen", False)
 
     composition_summary = {
         "scene_path": scene_json_path,
@@ -35,13 +36,15 @@ def output_result_node(state) -> Dict[str, Any]:
         "imported_actors": imported_actors,
         "failed_actors": failed_actors,
         "review_result": review_result,
+        "needs_model_regen": needs_model_regen,
     }
 
     logger.info(
-        "output_result: 场景组合完成 — 导入 %d/%d, 审查 %s",
+        "output_result: 场景组合完成 — 导入 %d/%d, 审查 %s%s",
         len(imported_actors),
         valid_models,
         review_result.get("overall", "N/A"),
+        " [需重新生成物体]" if needs_model_regen else "",
     )
 
     return {
@@ -49,6 +52,7 @@ def output_result_node(state) -> Dict[str, Any]:
         "imported_actors": imported_actors,
         "failed_actors": failed_actors,
         "review_result": review_result,
+        "needs_model_regen": needs_model_regen,
         "global_assets": {
             "scene_composition": composition_summary,
         },

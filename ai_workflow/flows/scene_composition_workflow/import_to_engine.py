@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any, Dict, List
 
 from ai_workflow.streaming import stream_output_node
@@ -22,13 +23,15 @@ def _import_single_actor(
 ) -> Dict[str, Any]:
     """导入单个 actor 到引擎，返回结果字典。"""
     name = actor.get("source_name") or actor.get("name", "unknown")
+    # 传给引擎的 actor 名使用无扩展名版本（与 place_scene_from_items 中 display_name 保持一致）
+    actor_name = actor.get("name") or Path(name).stem
     model_path = actor.get("path", "")
     geometry = actor.get("geometry", {})
 
     try:
         raw = tool.invoke({
             "model_path": model_path,
-            "actor_name": name,
+            "actor_name": actor_name,
             "position": geometry.get("pos", [0, 0, 0]),
             "rotation": geometry.get("rot", [0, 0, 0]),
             "scale": geometry.get("scale", [1, 1, 1]),
@@ -36,8 +39,8 @@ def _import_single_actor(
         })
         parsed = parse_import_result(raw)
         if parsed.get("error"):
-            return {"name": name, "error": parsed["error"]}
-        return {"name": parsed.get("actor_name", name), "model_path": model_path, "status": "success"}
+            return {"name": actor_name, "error": parsed["error"]}
+        return {"name": parsed.get("actor_name", actor_name), "model_path": model_path, "status": "success"}
     except Exception as exc:
         logger.error("导入 actor %s 失败: %s", name, exc, exc_info=True)
         return {"name": name, "error": str(exc)}

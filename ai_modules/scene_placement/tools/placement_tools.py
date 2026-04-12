@@ -187,11 +187,11 @@ def _get_active_project_path() -> Path:
 
 
 def _normalize_scene_output_path(scene_path: str, scene_name: str) -> Path:
-    project = _get_active_project_path()
+    project = _get_active_project_path().resolve()  # 强制转换为绝对路径，避免相对路径导致的读取失败
     out_dir = project / "Scene"
     out_dir.mkdir(parents=True, exist_ok=True)
     fname = _safe_filename(scene_name or "scene") + ".json"
-    return out_dir / fname
+    return (out_dir / fname).resolve()
 
 
 def _extract_first_file_path(env: Dict[str, Any]) -> Optional[str]:
@@ -378,8 +378,10 @@ def load_placement_tools(config: AIConfig) -> List[StructuredTool]:
 
                 actor_name = it.file_name or local_file.name
                 ext = local_file.suffix.lower().lstrip(".")
+                # actor 显示名去掉扩展名，避免引擎中出现 "模型名.glb" 的 actor 名
+                display_name = Path(actor_name).stem if actor_name else actor_name
                 actor = {
-                    "name": actor_name,
+                    "name": display_name,
                     "source_name": actor_name,
                     "path": _norm_path(local_file),
                     "type": ext,
@@ -393,21 +395,22 @@ def load_placement_tools(config: AIConfig) -> List[StructuredTool]:
             logger.info("[scene_placement] scene.json written: %s (size=%d)", str(sp), sp.stat().st_size)
 
             scene_text = sp.read_text(encoding="utf-8")
+            sp_str = _norm_path(sp)  # 使用 resolve() 后的绝对路径（正斜杠）
             parts = [
                 build_part(
                     content_type="text",
-                    content_text=f"✅ 已生成 scene.json\nscene_path: {str(sp)}\nactors: {len(created)}",
-                    parameter={"additional_type": ["placement_scene_path"], "scene_path": str(sp), "actors": created},
+                    content_text=f"✅ 已生成 scene.json\nscene_path: {sp_str}\nactors: {len(created)}",
+                    parameter={"additional_type": ["placement_scene_path"], "scene_path": sp_str, "actors": created},
                 ),
                 build_part(
                     content_type="file",
                     content_text=scene_text,
-                    parameter={"additional_type": ["placement_scene"], "name": "scene.json", "scene_path": str(sp)},
+                    parameter={"additional_type": ["placement_scene"], "name": "scene.json", "scene_path": sp_str},
                 ),
                 build_part(
                     content_type="text",
                     content_text="scene.json 内容如下（可直接复制保存）：\n\n```json\n" + scene_text + "\n```",
-                    parameter={"additional_type": ["placement_scene_inline_json"], "scene_path": str(sp)},
+                    parameter={"additional_type": ["placement_scene_inline_json"], "scene_path": sp_str},
                 ),
             ]
             return build_success_result(parts=parts).to_envelope(interface_type="media")
