@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import shutil
@@ -71,9 +72,25 @@ def _is_written_image(path: str) -> bool:
 
 
 def make_temp_capture_path(temp_root: Path, actor_name: str, view_name: str) -> Path:
-    """为截图生成 ASCII 临时文件路径。"""
+    """为截图生成 ASCII 临时文件路径。
+
+    使用 actor_name 的哈希值创建独立子目录，避免多个非 ASCII 名称
+    （如中文）sanitize 后都变成 "object" 导致路径冲突。
+    """
     safe_actor_name = _sanitize_ascii_name(actor_name)
-    return temp_root / f"{safe_actor_name}_{view_name}.png"
+    name_hash = hashlib.md5(actor_name.encode("utf-8")).hexdigest()[:8]
+    actor_dir = temp_root / f"{safe_actor_name}_{name_hash}"
+    actor_dir.mkdir(parents=True, exist_ok=True)
+    return actor_dir / f"{view_name}.png"
+
+
+def cleanup_temp_capture_dir(temp_root: Path) -> None:
+    """清理整个临时截图目录，在一轮截图全部完成后调用。"""
+    try:
+        if temp_root.exists():
+            shutil.rmtree(temp_root, ignore_errors=True)
+    except OSError as exc:
+        logger.warning("[Workflow][capture] 清理临时目录失败: %s", exc)
 
 
 def save_to_temp_then_move(

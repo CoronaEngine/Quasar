@@ -20,22 +20,24 @@ logger = logging.getLogger(__name__)
 
 # ── 默认测试模型（修改为你本地实际存在的路径） ──────────────────────────
 
+BasePath = "D:/CodeLib/New_Corona_Project/"
+
 DEFAULT_MODELS: List[Dict[str, str]] = [
-    {"name": "不对称环形吊灯", "path": "D:/project/test/New_Corona_Project/models/base_basic_pbr_9/不对称环形吊灯.glb"},
-    {"name": "可调光蚕丝落地灯", "path": "D:/project/test/New_Corona_Project/models/base_basic_pbr_20/可调光蚕丝落地灯.glb"},
-    {"name": "不对称亚克力悬浮床头柜", "path": "D:/project/test/New_Corona_Project/models/base_basic_pbr_19/不对称亚克力悬浮床头柜.glb"},
-    {"name": "弧形编织藤条休闲椅", "path": "D:/project/test/New_Corona_Project/models/base_basic_pbr_11/弧形编织藤条休闲椅.glb"},
-    {"name": "悬浮式胡桃木平台床", "path": "D:/project/test/New_Corona_Project/models/base_basic_pbr_14/悬浮式胡桃木平台床.glb"},
+    {"name": "欧式双人床", "path": f"{BasePath}models/欧式双人床/欧式双人床.glb"},
+    {"name": "现代沙发", "path": f"{BasePath}models/现代沙发/现代沙发.glb"},
+    {"name": "艺术落地灯", "path": f"{BasePath}models/艺术落地灯/艺术落地灯.glb"},
+    {"name": "教堂", "path": f"{BasePath}models/教堂/教堂.glb"},
+    {"name": "红色复古双门轿跑", "path": f"{BasePath}models/红色复古双门轿跑/红色复古双门轿跑.glb"},
 ]
 
-# 默认设计方案：与 DEFAULT_MODELS 中的婆寔家具对应
+# 默认设计方案：与 DEFAULT_MODELS 中的模型对应
 DEFAULT_PROMPT = (
-    "现代简约婆寔场景。房间尺寸为 10m（X）×10m（Z），天花板高度 3m。"
-    "床（悬浮式胡桃木平台床）放在房间北侧中心，床头朝南（Z 正方向），拼搓靠北墙。"
-    "床头柜（不对称亚克力悬浮床头柜）分列床的左右两侧，紧靠床两端。"
-    "落地灯（可调光蚕丝落地灯）放在房间东南角（X 正、Z 正），朝向房间内部。"
-    "休闲椅（弧形编织藤条休闲椅）放在落地灯旁边，面朝房间中心。"
-    "吊灯（不对称环形吊灯）悬挂在床正上方，高度 Y=2.2m，XZ 与床中心对齐。"
+    "现代展厅场景。房间尺寸为 10m（X）×10m（Z），天花板高度 3m。"
+    "欧式双人床放在房间北侧中心，床头靠北墙。"
+    "现代沙发放在房间中部偏南区域，朝向北侧。"
+    "艺术落地灯放在沙发右后方（东侧），用于氛围照明。"
+    "教堂模型放在房间西北角，作为背景主体景观。"
+    "红色复古双门轿跑放在房间东南侧展示位，车头朝向西北方向。"
 )
 
 
@@ -78,7 +80,7 @@ def build_test_state(
         "session_id": session_id,
         "function_id": 21003,
         "prompt": prompt,
-        "global_assets": { 
+        "global_assets": {
             "model_retrieval": {
                 "model_results": model_results,
             },

@@ -50,7 +50,7 @@ TEST_CASE_DATA: Dict[str, Dict[str, Any]] = {
         "expected_model_results": [
             {
                 "item_name": "现代沙发",
-                "object_id": "modern_sofa",
+                "object_id": "现代沙发",
                 "task_index": 1,
                 "source": "retrieval",
                 "distance": 0.15,
@@ -61,7 +61,7 @@ TEST_CASE_DATA: Dict[str, Dict[str, Any]] = {
             },
             {
                 "item_name": "艺术落地灯",
-                "object_id": "art_lamp",
+                "object_id": "艺术落地灯",
                 "task_index": 2,
                 "source": "generation",
                 "model_path": f"{BaseDir}models\\艺术落地灯\\艺术落地灯.glb",
@@ -89,7 +89,7 @@ TEST_CASE_DATA: Dict[str, Dict[str, Any]] = {
         "expected_model_results": [
             {
                 "item_name": "现代沙发",
-                "object_id": "modern_sofa",
+                "object_id": "现代沙发",
                 "task_index": 1,
                 "source": "generation",
                 "model_path": f"{BaseDir}models\\现代沙发\\现代沙发.glb",
@@ -98,7 +98,7 @@ TEST_CASE_DATA: Dict[str, Dict[str, Any]] = {
             },
             {
                 "item_name": "艺术落地灯",
-                "object_id": "art_lamp",
+                "object_id": "艺术落地灯",
                 "task_index": 2,
                 "source": "generation",
                 "model_path": f"{BaseDir}models\\艺术落地灯\\艺术落地灯.glb",

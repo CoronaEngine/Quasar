@@ -8,6 +8,7 @@ from CoronaCore.core.managers import scene_manager
 from ai_workflow.streaming import stream_output_node
 from ai_workflow.flows.model_retrieval_workflow.temp_capture_storage import (
     build_temp_capture_root,
+    cleanup_temp_capture_dir,
     make_temp_capture_path,
     save_to_temp_then_move,
 )
@@ -258,6 +259,7 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     logger.error(f"[Workflow] 清理模型失败: {e}")
 
     # 仅返回本轮截图结果，不与历史合并
+    cleanup_temp_capture_dir(temp_capture_root)
     return {
         "model_results": model_results,
         "six_view_images": all_saved_views,
