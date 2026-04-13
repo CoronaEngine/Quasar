@@ -46,6 +46,31 @@ def _import_single_actor(
         return {"name": name, "error": str(exc)}
 
 
+def _remove_previous_actors(
+    actors: List[Dict[str, Any]],
+    scene_name: str,
+) -> None:
+    """清除上一轮已导入的 actor，避免重试时模型重复叠加。"""
+    if not actors:
+        return
+
+    tool = get_tool("remove_model")
+    if tool is None:
+        logger.warning("import_to_engine: remove_model 工具未注册，跳过清场")
+        return
+
+    logger.info("import_to_engine: 清除上一轮 %d 个 actor...", len(actors))
+    for actor in actors:
+        name = actor.get("name", "")
+        if not name:
+            continue
+        try:
+            tool.invoke({"actor_name": name, "scene_name": scene_name})
+            logger.debug("import_to_engine: 已删除 actor %s", name)
+        except Exception as exc:
+            logger.warning("import_to_engine: 删除 actor %s 失败: %s", name, exc)
+
+
 @stream_output_node("integrated", NO_OUTPUT)
 def import_to_engine_node(state) -> Dict[str, Any]:
     """并发导入所有 actor 到引擎场景中。"""
@@ -59,6 +84,11 @@ def import_to_engine_node(state) -> Dict[str, Any]:
     tool = get_tool("import_model")
     if tool is None:
         return {"error": "import_model 工具未注册"}
+
+    # 重试时先清除上一轮已导入的 actor，避免同名模型重复叠加
+    previous_imported = intermediate.get("imported_actors", [])
+    if previous_imported:
+        _remove_previous_actors(previous_imported, scene_name)
 
     logger.info("import_to_engine: 开始导入 %d 个 actor (max_workers=%d)", len(actors), IMPORT_MAX_WORKERS)
 
