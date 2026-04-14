@@ -85,7 +85,6 @@ def import_to_engine_node(state) -> Dict[str, Any]:
     if tool is None:
         return {"error": "import_model 工具未注册"}
 
-    # 重试时先清除上一轮已导入的 actor，避免同名模型重复叠加
     previous_imported = intermediate.get("imported_actors", [])
     if previous_imported:
         _remove_previous_actors(previous_imported, scene_name)
