@@ -61,6 +61,7 @@ def extract_recognition_config(config: AIConfig) -> RecognitionConfig:
 
             return RecognitionConfig(
                 enable=raw.get("enable", False),
+                provider=raw.get("provider", "dashscope"),
                 embedding=embedding_cfg,
                 vector_db=vector_db_cfg,
                 standard_image_count=raw.get("standard_image_count", 6),
@@ -91,6 +92,21 @@ def extract_recognition_config(config: AIConfig) -> RecognitionConfig:
     except Exception as e:
         logger.error(f"解析物体识别配置失败: {e}，使用默认值")
         return RecognitionConfig()
+
+
+def _resolve_embedding_api_key(config: AIConfig, recognition_cfg: RecognitionConfig) -> str:
+    """优先从 providers 解析嵌入 API Key，兼容旧字段回退。"""
+    provider_name = (getattr(recognition_cfg, "provider", "") or "").strip()
+    if provider_name:
+        try:
+            providers = getattr(config, "providers", {}) or {}
+            provider = providers.get(provider_name)
+            if provider and getattr(provider, "api_key", None):
+                return str(provider.api_key)
+        except Exception as e:
+            logger.warning("从 providers 解析 object_recognition api_key 失败: %s", e)
+
+    return (getattr(recognition_cfg, "dashscope_api_key", "") or "").strip()
 
 
 # ====================================================================== #
@@ -166,6 +182,7 @@ def core_execute_object_store(
         from .vector_db import get_vector_db
 
         # 初始化嵌入提供者和向量数据库
+        recognition_cfg.dashscope_api_key = _resolve_embedding_api_key(cfg, recognition_cfg)
         embedding_provider = build_provider(recognition_cfg)
         vector_db = get_vector_db(
             db_path=recognition_cfg.vector_db.db_path,

@@ -32,6 +32,8 @@ from ai_models.base_pool.responses import (
     ChatResult,
 )
 from ai_modules.providers.configs.dataclasses import ProviderConfig
+from ai_modules.image_generate.tools.client_image import LingyaImageClient
+from ai_modules.image_generate.tools.client_grsai import GrsaiImageClient
 from ai_modules.speech_generate.configs.dataclasses import SpeechAudioConfig, SpeechAppConfig
 
 logger = logging.getLogger(__name__)
@@ -44,10 +46,21 @@ _legacy_clients: Dict[MediaCategory, Any] = {}
 _legacy_clients_lock = threading.Lock()
 
 
+# ============================================================================
+# 可扩展图像客户端工厂注册
+# ============================================================================
+
+
+_IMAGE_CLIENT_CLASSES: Dict[str, type] = {
+    # provider 名称与 image.provider 对齐
+    "grsai_image": GrsaiImageClient,
+    "lingya_image": LingyaImageClient,
+}
+
+
 def _get_legacy_image_client():
     """获取旧图像客户端单例"""
     from ai_config.ai_config import get_ai_config
-    from ai_modules.image_generate.tools.client_image import LingyaImageClient
 
     config = get_ai_config()
     image_cfg = config.image
@@ -59,7 +72,9 @@ def _get_legacy_image_client():
     if not provider or not provider.api_key:
         return None
 
-    return LingyaImageClient(
+    key = (image_cfg.provider or "").strip().lower()
+    client_cls = _IMAGE_CLIENT_CLASSES.get(key, LingyaImageClient)
+    return client_cls(
         provider=provider,
         model=image_cfg.model,
         base_url=image_cfg.base_url,

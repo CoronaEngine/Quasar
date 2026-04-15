@@ -40,6 +40,7 @@ def _load_recognition_config(raw: Mapping[str, Any] | None) -> RecognitionConfig
 
     return RecognitionConfig(
         enable=_as_bool(raw.get("enable"), False),
+        provider=raw.get("provider", "dashscope"),
         embedding=embedding_cfg,
         vector_db=vector_db_cfg,
         standard_image_count=raw.get("standard_image_count", 6),

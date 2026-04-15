@@ -26,6 +26,7 @@ import re
 import urllib.parse
 
 _WIN_INVALID = r'[<>:"/\\|?*\x00-\x1F]'
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Mesh 下载完成 Event 注册表
@@ -227,8 +228,17 @@ class RodinGenerate3DInput(BaseModel):
 def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
     threed_config = config.rodin3d
 
-    base_url = threed_config.base_url.strip()
-    api_key = threed_config.api_key.strip()
+    provider_name = (getattr(threed_config, "provider", "") or "").strip()
+    provider_cfg = (config.providers or {}).get(provider_name) if provider_name else None
+
+    base_url = (
+        (getattr(threed_config, "base_url", "") or "").strip()
+        or (getattr(provider_cfg, "base_url", "") or "").strip()
+    )
+    api_key = (
+        (getattr(threed_config, "api_key", "") or "").strip()
+        or (getattr(provider_cfg, "api_key", "") or "").strip()
+    )
     if not base_url:
         raise RuntimeError("Rodin base_url 缺失：请在 settings.rodin_3d.base_url 配置")
     if not api_key:
@@ -720,7 +730,7 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
                                     if member_ext in {".obj", ".glb", ".gltf", ".fbx", ".stl", ".usdz"}:
                                         safe_name = f"base{member_ext}"
                                     elif member_ext == ".mtl":
-                                        safe_name = f"base.mtl"
+                                        safe_name = "base.mtl"
                                     else:
                                         safe_name = _safe_filename(orig_name)
                                     if not safe_name:

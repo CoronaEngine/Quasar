@@ -30,7 +30,8 @@ def OBJECT_RECOGNITION_SETTINGS() -> Dict[str, Any]:
         "standard_image_count": 6,
         "storage_instruction": "Represent this document for retrieval:",
         "query_instruction": "Represent the query for retrieving relevant documents:",
-        # 云端嵌入服务（Dashscope）
+        # 云端嵌入服务（推荐通过 providers.provider 统一管理 api_key）
+        "provider": "dashscope",
         "dashscope_api_key": "",
         "dashscope_model": "tongyi-embedding-vision-plus-2026-03-06",
         # 目录自动扫描

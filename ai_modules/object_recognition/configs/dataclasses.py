@@ -58,8 +58,10 @@ class RecognitionConfig:
     query_instruction: str = \
         "Represent the query for retrieving relevant documents:"
 
-    # ── 云端嵌入服务配置（Dashscope）──
-    # Dashscope API Key
+    # ── 云端嵌入服务配置（推荐通过 providers 统一管理）──
+    # providers 中的 provider 名称
+    provider: str = "dashscope"
+    # Dashscope API Key（兼容字段；建议放到 providers 中）
     dashscope_api_key: str = ""
     # Dashscope 多模态嵌入模型名称
     dashscope_model: str = "tongyi-embedding-vision-plus-2026-03-06"
