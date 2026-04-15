@@ -46,6 +46,7 @@ def extract_recognition_config(config: AIConfig) -> RecognitionConfig:
             return RecognitionConfig()
 
         if isinstance(raw, dict):
+            defaults = RecognitionConfig()
             # 从字典构建配置
             embedding_raw = raw.get("embedding", {})
             vector_db_raw = raw.get("vector_db", {})
@@ -60,27 +61,27 @@ def extract_recognition_config(config: AIConfig) -> RecognitionConfig:
             )
 
             return RecognitionConfig(
-                enable=raw.get("enable", False),
-                provider=raw.get("provider", "dashscope"),
+                enable=raw.get("enable", defaults.enable),
+                provider=raw.get("provider", defaults.provider),
                 embedding=embedding_cfg,
                 vector_db=vector_db_cfg,
-                standard_image_count=raw.get("standard_image_count", 6),
+                standard_image_count=raw.get("standard_image_count", defaults.standard_image_count),
                 storage_instruction=raw.get(
                     "storage_instruction",
-                    "Represent this document for retrieval:",
+                    defaults.storage_instruction,
                 ),
                 query_instruction=raw.get(
                     "query_instruction",
-                    "Represent the query for retrieving relevant documents:",
+                    defaults.query_instruction,
                 ),
-                dashscope_api_key=raw.get("dashscope_api_key", ""),
+                dashscope_api_key=raw.get("dashscope_api_key", defaults.dashscope_api_key),
                 dashscope_model=raw.get(
                     "dashscope_model",
-                    "tongyi-embedding-vision-plus-2026-03-06",
+                    defaults.dashscope_model,
                 ),
-                auto_scan_dir=raw.get("auto_scan_dir", ""),
-                auto_scan_embed=raw.get("auto_scan_embed", False),
-                auto_scan_max_images=raw.get("auto_scan_max_images", 6),
+                auto_scan_dir=raw.get("auto_scan_dir", defaults.auto_scan_dir),
+                auto_scan_embed=raw.get("auto_scan_embed", defaults.auto_scan_embed),
+                auto_scan_max_images=raw.get("auto_scan_max_images", defaults.auto_scan_max_images),
             )
 
         if isinstance(raw, RecognitionConfig):
