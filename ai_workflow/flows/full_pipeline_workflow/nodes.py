@@ -110,6 +110,19 @@ def run_scene_composition_node(state: Dict[str, Any]) -> Dict[str, Any]:
     _logger.info("[Pipeline] ▶ 阶段 3/3 scene_composition_workflow 开始")
 
     sub_state: SceneCompositionWorkflowState = _make_sub_state(state, SCENE_COMPOSITION_FUNCTION_ID)  # type: ignore[assignment]
+
+    # 优先使用 multi_scene 阶段生成的详细布局描述作为 compose prompt，
+    # 其中包含每个物品的位置、风格、搭配等信息，比原始用户输入更精准。
+    layout_text: str = (
+        state.get("global_assets", {}).get("multi_scene", {}).get("layout_text", "")
+    )
+    if layout_text:
+        sub_state["prompt"] = layout_text
+        _logger.info(
+            "[Pipeline] 使用 multi_scene.layout_text 作为场景组合 prompt (%d 字符)",
+            len(layout_text),
+        )
+
     graph = _SC_WORKFLOWS[SCENE_COMPOSITION_FUNCTION_ID]
     final = graph.invoke(sub_state)
 

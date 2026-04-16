@@ -10,11 +10,11 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
 import re
+import time
 from typing import List
 
 from langchain_core.tools import StructuredTool
@@ -58,11 +58,6 @@ class SceneRationalityReviewInput(BaseModel):
 # ===========================================================================
 # Helpers
 # ===========================================================================
-
-def _encode_image_to_base64(image_path: str) -> str:
-    with open(image_path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
-
 
 def _collect_png_files(output_dir: str, max_images: int) -> List[str]:
     """从目录中收集 PNG 文件，按名称排序后均匀间隔采样到 max_images 张。"""
@@ -111,14 +106,7 @@ def _build_scene_rationality_review_tool() -> StructuredTool:
         max_images: int = _MAX_IMAGES_DEFAULT,
     ) -> str:
         try:
-            from openai import OpenAI
-
-            api_key = os.getenv(
-                "ZHIZENGZENG_API_KEY",
-                "sk-zk249dc3baa72c51a10bb647cbd150953b069d68d09d5f12",
-            )
-            base_url = "https://api.zhizengzeng.com/v1/"
-            client = OpenAI(api_key=api_key, base_url=base_url)
+            from ai_models.base_pool import MediaCategory, OmniRequest, get_pool_registry
 
             # --- 收集截图 ---
             png_files = _collect_png_files(output_dir, max_images)
@@ -156,50 +144,36 @@ def _build_scene_rationality_review_tool() -> StructuredTool:
                 "}"
             )
 
-            content_list: list = [{"type": "text", "text": prompt_text}]
+            logger.info(
+                "[scene_review] 共 %d 张图片送入场景合理性审查...", len(png_files)
+            )
 
-            # --- 逐张图片编码追加 ---
-            loaded_count = 0
-            for img_path in png_files:
-                try:
-                    b64 = _encode_image_to_base64(img_path)
-                    content_list.append(
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{b64}"
-                            },
-                        }
-                    )
-                    loaded_count += 1
-                except Exception as e:
-                    logger.warning(
-                        "[scene_review] 图片读取失败，已跳过 %s: %s", img_path, e
-                    )
-
-            if loaded_count == 0:
+            # --- 通过 Omni 池调用 VLM（与 helpers.analyze_images_with_vlm 一致）---
+            pool_registry = get_pool_registry()
+            request = OmniRequest(
+                session_id=f"scene-review-{int(time.time())}",
+                prompt=prompt_text,
+                image_urls=png_files,
+            )
+            task = pool_registry.create_task(MediaCategory.OMNI, request)
+            if task is None:
                 return build_error_result(
-                    error_message="所有图片读取均失败，无法进行审查"
+                    error_message="Omni 池无可用账号，无法进行场景审查"
                 ).to_envelope(interface_type="scene")
 
-            logger.info(
-                "[scene_review] 共 %d 张图片送入场景合理性审查...", loaded_count
-            )
-
-            # --- 调用多模态 VLM ---
-            response = client.chat.completions.create(
-                model="qwen3.5-plus",
-                messages=[{"role": "user", "content": content_list}],
-                temperature=0.1,
-            )
-            raw_reply = response.choices[0].message.content.strip()
+            result = task()
+            raw_reply = result.metadata.get("analysis_result", "").strip()
+            if not raw_reply:
+                return build_error_result(
+                    error_message="VLM 返回内容为空"
+                ).to_envelope(interface_type="scene")
 
             review_json = _parse_json_reply(raw_reply)
 
             result_data = {
                 "status": "success",
                 "output_dir": output_dir,
-                "images_reviewed": loaded_count,
+                "images_reviewed": len(png_files),
                 "review": review_json,
             }
             part = build_part(

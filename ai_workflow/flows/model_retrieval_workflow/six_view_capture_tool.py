@@ -1,7 +1,11 @@
+import math
 import os
 import logging
+import tempfile
 import time
-from typing import Any, Dict
+import uuid
+from pathlib import Path
+from typing import Any, Dict, List
 
 from config.paths_config import get_project_screenshots_dir
 from CoronaCore.core.managers import scene_manager
@@ -17,6 +21,161 @@ from .helpers import get_tool, wait_mesh_then_resolve_model_file
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# 白色平面 OBJ 资源（懒生成，全进程复用）
+# ---------------------------------------------------------------------------
+_WHITE_PLANE_OBJ_PATH: str = ""
+
+
+def _get_white_plane_obj() -> str:
+    """返回一个 1x1 白色平面 OBJ 的绝对路径（写入系统临时目录，全程复用）。
+
+    平面中心在原点，朝向 +Y（法线向上），尺寸 1x1。
+    调用方用 set_scale 把它撑开到合适大小。
+    """
+    global _WHITE_PLANE_OBJ_PATH
+    if _WHITE_PLANE_OBJ_PATH and os.path.exists(_WHITE_PLANE_OBJ_PATH):
+        return _WHITE_PLANE_OBJ_PATH
+
+    tmp_dir = Path(tempfile.gettempdir()) / "corona_white_plane"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    mtl_path = tmp_dir / "white.mtl"
+    obj_path = tmp_dir / "white_plane.obj"
+
+    mtl_path.write_text(
+        "newmtl white\n"
+        "Ka 1.0 1.0 1.0\n"
+        "Kd 1.0 1.0 1.0\n"
+        "Ks 0.0 0.0 0.0\n"
+        "Ns 0.0\n"
+        "d 1.0\n",
+        encoding="ascii",
+    )
+
+    # 1x1 quad，法线 +Y，UV 覆盖 [0,1]²
+    obj_path.write_text(
+        "mtllib white.mtl\n"
+        "usemtl white\n"
+        "v -0.5  0.0 -0.5\n"
+        "v  0.5  0.0 -0.5\n"
+        "v  0.5  0.0  0.5\n"
+        "v -0.5  0.0  0.5\n"
+        "vn  0.0  1.0  0.0\n"
+        "vt  0.0  0.0\n"
+        "vt  1.0  0.0\n"
+        "vt  1.0  1.0\n"
+        "vt  0.0  1.0\n"
+        "f 1/1/1 2/2/1 3/3/1 4/4/1\n",
+        encoding="ascii",
+    )
+
+    _WHITE_PLANE_OBJ_PATH = str(obj_path)
+    logger.debug("白色平面 OBJ 已生成: %s", _WHITE_PLANE_OBJ_PATH)
+    return _WHITE_PLANE_OBJ_PATH
+
+
+def _create_white_box_actors(scene, aabb: List[float], margin: float = 1.2) -> List[Any]:
+    """在场景中创建 6 个纯白平面 Actor，围成包裹物体 AABB 的封闭白盒。
+
+    Args:
+        scene: CoronaCore Scene 实例
+        aabb: [min_x, min_y, min_z, max_x, max_y, max_z]
+        margin: AABB 尺寸的扩展倍率（默认 1.2 倍，留出拍摄余量）
+
+    Returns:
+        创建的 Actor 列表，由调用方负责销毁。
+    """
+    from CoronaCore.core.entities.actor import Actor
+
+    min_x, min_y, min_z, max_x, max_y, max_z = aabb
+    cx = (min_x + max_x) / 2.0
+    cy = (min_y + max_y) / 2.0
+    cz = (min_z + max_z) / 2.0
+    dx = (max_x - min_x) * margin
+    dy = (max_y - min_y) * margin
+    dz = (max_z - min_z) * margin
+    # 保证最小尺寸，避免退化
+    dx = max(dx, 0.1)
+    dy = max(dy, 0.1)
+    dz = max(dz, 0.1)
+
+    # 半尺寸偏移
+    hx, hy, hz = dx / 2.0, dy / 2.0, dz / 2.0
+
+    plane_obj = _get_white_plane_obj()
+
+    # 六个面的配置: (name, position, rotation_deg_xyz, scale_xyz)
+    # 平面默认法线 +Y，通过旋转对齐到各个面
+    face_configs = [
+        # 底面 (-Y，法线朝内 +Y，不旋转)
+        ("__wb_bottom", [cx, cy - hy, cz], [0.0, 0.0, 0.0],   [dx, 1.0, dz]),
+        # 顶面 (+Y，旋转 180° 使法线朝内 -Y)
+        ("__wb_top",    [cx, cy + hy, cz], [180.0, 0.0, 0.0], [dx, 1.0, dz]),
+        # 前面 (-Z，旋转 90° around X → 法线朝 +Z → 内朝 +Z)
+        ("__wb_front",  [cx, cy, cz - hz], [-90.0, 0.0, 0.0], [dx, 1.0, dy]),
+        # 后面 (+Z，旋转 90° 反向)
+        ("__wb_back",   [cx, cy, cz + hz], [90.0, 0.0, 0.0],  [dx, 1.0, dy]),
+        # 左面 (-X，旋转 90° around Z)
+        ("__wb_left",   [cx - hx, cy, cz], [0.0, 0.0, -90.0], [dz, 1.0, dy]),
+        # 右面 (+X)
+        ("__wb_right",  [cx + hx, cy, cz], [0.0, 0.0, 90.0],  [dz, 1.0, dy]),
+    ]
+
+    created: List[Any] = []
+    for name, pos, rot, scale in face_configs:
+        try:
+            actor = Actor(
+                name=name,
+                route=plane_obj,
+                actor_type="mesh",
+                parent_scene=scene,
+            )
+            # 白盒平面是纯视觉临时对象，必须关闭物理和回调，
+            # 否则物理线程持有 Python 闭包引用，remove_actor 时竞态 → SIGABRT
+            # 注意：on_move_callback 在 Actor.__init__ 中被自动注册，
+            # 力学系统对新 Actor 首帧因 last_pos=1e9 就认为「已移动」会立即入队；
+            # 必须在 add_actor 之前清除，防止 deferred 回调持有悬空 Python 引用。
+            actor.enable_collision_callback(False)
+            actor._mechanics.set_physics_enabled(False)
+            actor._mechanics.set_on_move_callback(lambda: None)
+            actor.set_position(pos, True)
+            actor.set_rotation(rot, True)
+            actor.set_scale(scale, True)
+            scene.add_actor(actor)
+            created.append(actor)
+        except Exception as exc:
+            logger.warning("创建白盒平面 %s 失败: %s", name, exc)
+
+    logger.debug("白色封闭盒创建完成，共 %d 个平面", len(created))
+    return created
+
+
+def _remove_white_box_actors(scene, actors: List[Any]) -> None:
+    """安全移除白盒 Actor：先清除 C++ 侧回调引用，等待一个物理帧，再 remove。"""
+    for actor in actors:
+        try:
+            actor.enable_collision_callback(False)
+            mech = getattr(actor, "_mechanics", None)
+            if mech is not None:
+                mech.set_physics_enabled(False)
+                mech.set_collision_callback(lambda *_: None)
+                mech.set_on_move_callback(lambda: None)
+        except Exception as exc:
+            logger.debug("清除白盒碰撞回调失败: %s", exc)
+
+    # 第二步：等待 2～3 个物理帧（~200ms），让力学线程完成所有 in-flight 的
+    # deferred on_move 回调，再让 optics 线程至少完成一帧渲染，
+    # 防止 remove_actor 时 geometry/optics handle 仍被渲染线程持有。
+    time.sleep(0.20)
+
+    # 第三步：安全移除
+    for actor in actors:
+        try:
+            scene.remove_actor(actor)
+        except Exception as exc:
+            logger.warning("移除白盒平面失败: %s", exc)
+
 
 def _resolve_active_scene():
     """健壮的场景获取逻辑"""
@@ -29,10 +188,226 @@ def _resolve_active_scene():
     return None
 
 
+# ---------------------------------------------------------------------------
+# 临时场景六视图拍摄（核心逻辑）
+# ---------------------------------------------------------------------------
+
+# 标准六视图配置：(仰角, 偏航角)
+# 坐标系 X+右 Y+上 Z+前, 相机位于目标方向的反侧，朝向物体中心
+_SIX_VIEW_CONFIGS = {
+    "front":  (0.0,   180.0),  # 相机在 -Z，朝 +Z 看（正面）
+    "back":   (0.0,     0.0),  # 相机在 +Z，朝 -Z 看（背面）
+    "left":   (0.0,   270.0),  # 相机在 -X，朝 +X 看（左侧）
+    "right":  (0.0,    90.0),  # 相机在 +X，朝 -X 看（右侧）
+    "top":    (90.0,    0.0),  # 相机在 +Y，朝 -Y 看（顶部）
+    "bottom": (-90.0,   0.0),  # 相机在 -Y，朝 +Y 看（底部）
+}
+
+
+def _run_capture_in_temp_scene(
+    active_scene: Any,
+    active_camera: Any,
+    actor_name: str,
+    final_model_path: str,
+    output_dir: str,
+    temp_capture_root: Path,
+) -> dict:
+    """在独立临时场景中完成六视图截图，与主场景完全隔离。
+
+    策略：
+    1. 新建临时场景（禁止写磁盘）。
+    2. 将 active_camera（持有渲染 surface）从主场景 C++ 层迁移到临时场景，
+       主场景同时 set_enabled(False)，避免主场景 Actor 出现在截图中。
+    3. 在临时场景中加载模型并构建白色封闭盒背景。
+       白盒边长 = 相机轨道半径 × 3，确保相机始终在盒内、背景面充满画面。
+    4. 截图结束后归还相机、恢复主场景，销毁临时场景。
+    """
+    from CoronaCore.core.managers import scene_manager as sm
+    from CoronaCore.core.entities.actor import Actor
+
+    temp_route = f"__six_view_tmp_{uuid.uuid4().hex[:8]}__"
+    temp_scene = None
+    actor = None
+    white_box_actors: List[Any] = []
+    view_dict: dict = {}
+    camera_moved = False
+
+    # 保存相机状态（截图结束后恢复）
+    orig_pos = list(active_camera.get_position())
+    orig_fwd = list(active_camera.get_forward())
+    orig_up  = list(active_camera.get_world_up())
+    orig_fov = float(active_camera.get_fov())
+
+    try:
+        # ── 1. 创建临时场景，禁止持久化 ─────────────────────────────────
+        temp_scene = sm.create(temp_route)
+        temp_scene.save_data = lambda: None  # 不写磁盘
+        logger.info("[Workflow][TempScene] 创建临时场景: %s", temp_route)
+
+        # ── 2. 迁移 active_camera 到临时场景（直接操作 C++ 层，跳过 auto_save）─
+        #       先移除主场景的 C++ camera 注册，再禁用主场景渲染
+        active_scene.engine_scene.remove_camera(active_camera.engine_obj)
+        active_scene.set_enabled(False)
+        camera_moved = True
+
+        # 移除 temp_scene ensure_default_camera 自动创建的无 surface 相机
+        for cam in list(temp_scene._cameras):
+            temp_scene.engine_scene.remove_camera(getattr(cam, "engine_obj", cam))
+        temp_scene._cameras.clear()
+        temp_scene._main_camera = None
+
+        # 将 active_camera 注入临时场景（仅 C++ 层注册）
+        temp_scene.engine_scene.add_camera(active_camera.engine_obj)
+        temp_scene._cameras = [active_camera]
+        temp_scene._main_camera = active_camera
+
+        # ── 3. 加载目标模型到临时场景 ────────────────────────────────────
+        logger.info("[Workflow][TempScene] 加载模型: %s => %s", actor_name, final_model_path)
+        actor = Actor(
+            name=actor_name,
+            route=final_model_path,
+            actor_type="mesh",
+            parent_scene=temp_scene,
+        )
+        # 纯截图对象：关闭物理、碰撞及移动回调，杜绝 deferred 回调持有悬空引用
+        actor.enable_collision_callback(False)
+        actor._mechanics.set_physics_enabled(False)
+        actor._mechanics.set_on_move_callback(lambda: None)
+        temp_scene.add_actor(actor)
+        time.sleep(1.0)  # 等待 GPU 资源（Mesh / Texture）加载完毕
+
+        # ── 4. 计算 AABB、拍摄中心与相机轨道半径 ────────────────────────
+        aabb      = actor._geometry.get_aabb()
+        actor_pos = actor.get_position()
+        actor_scl = actor.get_scale()
+
+        model_center = [
+            (aabb[0] + aabb[3]) / 2.0,
+            (aabb[1] + aabb[4]) / 2.0,
+            (aabb[2] + aabb[5]) / 2.0,
+        ]
+        center = [
+            actor_pos[0] + model_center[0] * actor_scl[0],
+            actor_pos[1] + model_center[1] * actor_scl[1],
+            actor_pos[2] + model_center[2] * actor_scl[2],
+        ]
+        dx = (aabb[3] - aabb[0]) * actor_scl[0]
+        dy = (aabb[4] - aabb[1]) * actor_scl[1]
+        dz = (aabb[5] - aabb[2]) * actor_scl[2]
+        # 相机轨道半径 = 对角线 × 1.5，最小 1.0
+        distance = max(math.sqrt(dx * dx + dy * dy + dz * dz) * 1.5, 1.0)
+        fov = orig_fov
+
+        # ── 5. 构建白色封闭盒背景 ────────────────────────────────────────
+        # 白盒边长基于相机轨道半径而非 AABB（避免各向异性 AABB 导致某面太小）：
+        #   box_half = distance × 3.0
+        # 验证（fov=60°）：
+        #   背景面距相机 = box_half + distance = 4.0 × distance
+        #   画面覆盖宽度 = 2 × 4.0d × tan(30°) ≈ 4.62d < 6.0d（白盒面宽）✓
+        box_half = distance * 3.0
+        cubic_aabb = [
+            center[0] - box_half, center[1] - box_half, center[2] - box_half,
+            center[0] + box_half, center[1] + box_half, center[2] + box_half,
+        ]
+        white_box_actors = _create_white_box_actors(temp_scene, cubic_aabb, margin=1.0)
+        if white_box_actors:
+            time.sleep(0.3)  # 等待白盒网格加载
+
+        # ── 6. 六视图截图 ─────────────────────────────────────────────────
+        for view_name, (elev_deg, az_deg) in _SIX_VIEW_CONFIGS.items():
+            elev_rad = math.radians(elev_deg)
+            az_rad   = math.radians(az_deg)
+            cos_elev, sin_elev = math.cos(elev_rad), math.sin(elev_rad)
+            cos_az,   sin_az   = math.cos(az_rad),   math.sin(az_rad)
+
+            offset_x = distance * cos_elev * sin_az
+            offset_y = distance * sin_elev
+            offset_z = distance * cos_elev * cos_az
+
+            position = [
+                center[0] + offset_x,
+                center[1] + offset_y,
+                center[2] + offset_z,
+            ]
+            fwd_raw = [center[i] - position[i] for i in range(3)]
+            fwd_len = math.sqrt(sum(f * f for f in fwd_raw))
+            fwd = [f / fwd_len for f in fwd_raw] if fwd_len > 1e-6 else [0.0, 0.0, -1.0]
+
+            # 防万向锁：正上/正下视图需重置 Up 向量
+            if elev_deg >= 89.0:
+                up = [0.0, 0.0, 1.0]
+            elif elev_deg <= -89.0:
+                up = [0.0, 0.0, -1.0]
+            else:
+                up = [0.0, 1.0, 0.0]
+
+            active_camera.set(position, fwd, up, fov)
+            time.sleep(0.15)  # 等待渲染管线刷新
+
+            filepath      = os.path.join(output_dir, f"{view_name}.png")
+            temp_filepath = make_temp_capture_path(temp_capture_root, str(actor_name), view_name)
+            saved = save_to_temp_then_move(
+                active_camera,
+                temp_path=temp_filepath,
+                final_path=filepath,
+                actor_name=str(actor_name),
+                view_name=view_name,
+            )
+            if saved:
+                view_dict[view_name] = saved
+
+        if view_dict:
+            logger.info("[Workflow][TempScene] %s 六视图完成: %s/6", actor_name, len(view_dict))
+        else:
+            logger.error("[Workflow][TempScene] %s 六视图失败: 0/6", actor_name)
+
+    except Exception as exc:
+        logger.error("[Workflow][TempScene] 截图崩溃: %s", exc, exc_info=True)
+
+    finally:
+        # 清理白色封闭盒
+        if white_box_actors and temp_scene is not None:
+            _remove_white_box_actors(temp_scene, white_box_actors)
+
+        # 清理模型 Actor
+        if actor is not None and temp_scene is not None:
+            try:
+                temp_scene.remove_actor(actor)
+            except Exception as exc:
+                logger.warning("[Workflow][TempScene] 清理临时模型失败: %s", exc)
+
+        # 归还 active_camera：从临时场景移除，重新注入主场景，恢复渲染
+        if camera_moved:
+            if temp_scene is not None:
+                try:
+                    temp_scene.engine_scene.remove_camera(active_camera.engine_obj)
+                    temp_scene._cameras.clear()
+                    temp_scene._main_camera = None
+                except Exception as exc:
+                    logger.warning("[Workflow][TempScene] 从临时场景移除相机失败: %s", exc)
+            try:
+                active_scene.engine_scene.add_camera(active_camera.engine_obj)
+                active_scene.set_enabled(True)
+            except Exception as exc:
+                logger.error("[Workflow][TempScene] 归还相机到主场景失败 (严重): %s", exc)
+
+        # 恢复相机姿态
+        try:
+            active_camera.set(orig_pos, orig_fwd, orig_up, orig_fov)
+        except Exception as exc:
+            logger.warning("[Workflow][TempScene] 恢复相机状态失败: %s", exc)
+
+        # 销毁临时场景（从 scene_manager 注销，GC 回收 C++ 资源）
+        if temp_scene is not None:
+            sm.remove(temp_route)
+            logger.info("[Workflow][TempScene] 临时场景已销毁: %s", temp_route)
+
+    return view_dict
+
+
 @stream_output_node("integrated", NO_OUTPUT)
 def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    # 强绑定语义：six_view_images 仅表达本轮截图结果，不维护历史缓存
-    # visual_review 与 register 必须从 result.six_views_dict 读取，不再使用 state 级 six_view_images 兜底
+    """六视图截图节点：为每个生成结果在独立临时场景中拍摄标准六视图。"""
     model_results = state.get("model_results", [])
     if not model_results:
         return {"six_view_images": {}}
@@ -41,13 +416,12 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if not multiview_tool:
         return {"six_view_images": {}}
 
-    scene = _resolve_active_scene()
-    if scene is None:
+    active_scene = _resolve_active_scene()
+    if active_scene is None:
         logger.warning("[Workflow] 未加载任何场景，无法执行截图")
         return {"six_view_images": {}}
 
     all_saved_views = {}
-    # 临时设计：先写入 ASCII 临时路径，再由 Python 搬运到最终中文路径。
     temp_capture_root = build_temp_capture_root()
 
     for result in model_results:
@@ -67,14 +441,21 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if not actor_name or not raw_model_path:
             continue
 
-        # 先做 mesh 完成门禁，再解析真正的 .glb/.obj 文件路径
+        # Mesh 完成门禁，解析真实 3D 文件路径
         final_model_path = wait_mesh_then_resolve_model_file(
             raw_model_path=str(raw_model_path),
             wait_object_id=wait_object_id,
             has_mesh_pending=has_mesh_pending,
         )
 
-        # 确定截图的输出目录（放在原路径同级或子文件夹）
+        if not final_model_path:
+            logger.warning(
+                "[Workflow] %s 截图前模型未就绪，在 %s 及其子目录下未找到 .glb/.obj，跳过。",
+                actor_name, raw_model_path,
+            )
+            continue
+
+        # 确定截图输出目录
         if os.path.isabs(raw_model_path):
             model_dir = (
                 raw_model_path
@@ -83,7 +464,6 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
             )
         else:
             from CoronaCore.core.corona_editor import CoronaEditor
-
             project_path = getattr(
                 CoronaEditor.CoronaEngine,
                 "active_project_path",
@@ -93,172 +473,32 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
             model_dir = (
                 model_dir if os.path.isdir(model_dir) else os.path.dirname(model_dir)
             )
-
         output_dir = model_dir
         os.makedirs(output_dir, exist_ok=True)
 
-        logger.info(f"[Workflow] 正在准备为 {actor_name} 生成环绕视图...")
-
-        actor = scene.find_actor(actor_name)
-        is_temp_loaded = False
-
-        # 【逻辑修正】：使用真实找到的 final_model_path 判断
-        if not actor and final_model_path and os.path.exists(final_model_path):
-            logger.info(
-                f"[Workflow] 场景中未找到 {actor_name}，正在从硬盘加载真实文件: {final_model_path}"
-            )
-            try:
-                from CoronaCore.core.entities.actor import Actor
-
-                # 必须传入具体的 .glb 等文件
-                actor = Actor(
-                    name=actor_name,
-                    route=final_model_path,
-                    actor_type="mesh",
-                    parent_scene=scene,
-                )
-                scene.add_actor(actor)
-                is_temp_loaded = True
-
-                # 给予引擎充分的时间加载网格和材质
-                time.sleep(1.0)
-            except Exception as e:
-                logger.error(f"[Workflow] 临时加载模型失败: {e}")
-                continue
-        elif not final_model_path:
-            logger.warning(
-                f"[Workflow] {actor_name} 截图前模型未就绪，无法在 {raw_model_path} 及其子目录下找到受支持的 3D 模型文件 (.glb/.obj)，跳过。"
-            )
-
-        if not scene.find_actor(actor_name):
-            logger.warning(f"[Workflow] 无法加载 {actor_name}，跳过截图。")
+        # 获取主场景相机（持有渲染 surface，是截图的必要条件）
+        active_camera = active_scene.find_camera(None)
+        if not active_camera:
+            logger.error("[Workflow] 场景中没有可用相机，跳过 %s 截图", actor_name)
             continue
 
-        try:
-            # 获取场景中的主相机
-            camera = scene.find_camera(None)
-            if not camera:
-                logger.error(f"[Workflow] 场景中没有可用相机，跳过 {actor_name} 截图")
-                continue
+        logger.info("[Workflow] 正在为 %s 新开临时场景进行六视图截图...", actor_name)
+        view_dict = _run_capture_in_temp_scene(
+            active_scene=active_scene,
+            active_camera=active_camera,
+            actor_name=actor_name,
+            final_model_path=final_model_path,
+            output_dir=output_dir,
+            temp_capture_root=temp_capture_root,
+        )
 
-            # --- 1. 精准计算物体的中心点和观察距离 ---
-            import math
+        if view_dict:
+            all_saved_views[actor_name] = view_dict
+            result["six_views_dict"] = view_dict
+            logger.info("[Workflow] %s 六视图生成完成: 成功 %s/6", actor_name, len(view_dict))
+        else:
+            logger.error("[Workflow] %s 六视图生成失败: 0/6", actor_name)
 
-            aabb = actor._geometry.get_aabb()
-            actor_pos = actor.get_position()
-            actor_scale = actor.get_scale()
-
-            model_center = [
-                (aabb[0] + aabb[3]) / 2.0,
-                (aabb[1] + aabb[4]) / 2.0,
-                (aabb[2] + aabb[5]) / 2.0,
-            ]
-            center = [
-                actor_pos[0] + model_center[0] * actor_scale[0],
-                actor_pos[1] + model_center[1] * actor_scale[1],
-                actor_pos[2] + model_center[2] * actor_scale[2],
-            ]
-            dx = (aabb[3] - aabb[0]) * actor_scale[0]
-            dy = (aabb[4] - aabb[1]) * actor_scale[1]
-            dz = (aabb[5] - aabb[2]) * actor_scale[2]
-            # 乘以 1.5 倍对角线长度，留出画面安全边距
-            distance = max(math.sqrt(dx * dx + dy * dy + dz * dz) * 1.5, 1.0)
-            fov = camera.get_fov()
-
-            # --- 2. 定义标准六视图的精确三维角度：(仰角, 偏航角) ---
-            view_configs = {
-                "front": (0.0, 0.0),  # 前
-                "back": (0.0, 180.0),  # 后
-                "left": (0.0, 270.0),  # 左
-                "right": (0.0, 90.0),  # 右
-                "top": (90.0, 0.0),  # 上
-                "bottom": (-90.0, 0.0),  # 下
-            }
-
-            view_dict = {}
-
-            # --- 3. 循环将相机摆放到 6 个精确位置并截图 ---
-            for view_name, (elev_deg, az_deg) in view_configs.items():
-                elev_rad, az_rad = math.radians(elev_deg), math.radians(az_deg)
-                cos_elev, sin_elev = math.cos(elev_rad), math.sin(elev_rad)
-                cos_az, sin_az = math.cos(az_rad), math.sin(az_rad)
-
-                # 计算相机的球面坐标偏移
-                offset_x = distance * cos_elev * sin_az
-                offset_y = distance * sin_elev
-                offset_z = distance * cos_elev * cos_az
-
-                position = [
-                    center[0] + offset_x,
-                    center[1] + offset_y,
-                    center[2] + offset_z,
-                ]
-
-                # 计算相机朝向 (死死盯住物体中心)
-                fwd = [
-                    center[0] - position[0],
-                    center[1] - position[1],
-                    center[2] - position[2],
-                ]
-                fwd_len = math.sqrt(sum(f * f for f in fwd))
-                fwd = [f / fwd_len for f in fwd] if fwd_len > 1e-6 else [0.0, 0.0, -1.0]
-
-                # 【防万向锁】处理正上方和正下方时，相机的 Up 向量必须重置
-                if elev_deg >= 89.0:
-                    up = [0.0, 0.0, 1.0]
-                elif elev_deg <= -89.0:
-                    up = [0.0, 0.0, -1.0]
-                else:
-                    up = [0.0, 1.0, 0.0]
-
-                # 移动相机并等待渲染管线刷新 (极其重要)
-                camera.set(position, fwd, up, fov)
-                time.sleep(0.15)
-
-                # 先保存到 ASCII 临时目录，再由 Python 移动到最终路径。
-                filepath = os.path.join(output_dir, f"{view_name}.png")
-                temp_filepath = make_temp_capture_path(
-                    temp_capture_root,
-                    str(actor_name),
-                    view_name,
-                )
-                # 临时设计：规避 C++ PNG 写入中文路径失败的问题。
-                saved_filepath = save_to_temp_then_move(
-                    camera,
-                    temp_path=temp_filepath,
-                    final_path=filepath,
-                    actor_name=str(actor_name),
-                    view_name=view_name,
-                )
-                if saved_filepath:
-                    view_dict[view_name] = saved_filepath
-
-            # 记录这 6 张图的结果
-            if view_dict:
-                all_saved_views[actor_name] = view_dict
-                result["six_views_dict"] = view_dict
-                logger.info(
-                    "[Workflow] %s 六视图生成完成: 成功 %s/6",
-                    actor_name,
-                    len(view_dict),
-                )
-            else:
-                logger.error("[Workflow] %s 六视图生成失败: 0/6", actor_name)
-
-        except Exception as e:
-            logger.error(f"[Workflow] 截图执行崩溃: {e}", exc_info=True)
-
-        finally:
-            if is_temp_loaded and actor:
-                logger.info(
-                    f"[Workflow] 截图完毕，正在清理临时加载的模型: {actor_name}"
-                )
-                try:
-                    scene.remove_actor(actor)
-                except Exception as e:
-                    logger.error(f"[Workflow] 清理模型失败: {e}")
-
-    # 仅返回本轮截图结果，不与历史合并
     cleanup_temp_capture_dir(temp_capture_root)
     return {
         "model_results": model_results,

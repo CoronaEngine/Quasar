@@ -138,10 +138,21 @@ def _get_mock_visual_review_reply(
     return None
 
 
+# 视觉审查开关：设为 True 时跳过 AI 模型调用，直接放行所有结果
+_VISUAL_REVIEW_DISABLED = True
+
+
 @stream_output_node("integrated", NO_OUTPUT)
 def visual_review_node(state: Dict[str, Any]) -> Dict[str, Any]:
     model_results = state.get("model_results", [])
     session_id = str(state.get("session_id", "") or "")
+
+    if _VISUAL_REVIEW_DISABLED:
+        logger.info("[Workflow][visual_review] 审查阶段已关闭，全部放行。")
+        for result in model_results:
+            if not result.get("review_passed") and not result.get("error"):
+                result["review_passed"] = True
+        return {"model_results": model_results, "needs_retry": False}
 
     needs_retry = False
     pending_generation = []

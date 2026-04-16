@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict, List
 
 from ai_workflow.streaming import stream_output_node
+from ai_workflow.flows.model_retrieval_workflow.helpers import resolve_model_file
 
 from .formatters import NO_OUTPUT
 
@@ -61,10 +62,20 @@ def collect_models_node(state) -> Dict[str, Any]:
             logger.warning("跳过缺少 model_path 的模型: %s", row.get("item_name", "?"))
             continue
 
+        # 将相对路径解析为实际存在的绝对路径
+        resolved_path = resolve_model_file(model_path)
+        if not resolved_path:
+            logger.warning(
+                "跳过无法解析的模型路径 %s: %s",
+                row.get("item_name", "?"),
+                model_path,
+            )
+            continue
+
         item: Dict[str, Any] = {
             "object_id": row.get("object_id", row.get("item_name", "")),
             "name": row.get("item_name", ""),
-            "local_path": model_path,
+            "local_path": resolved_path,
         }
 
         # 若上游提供了布局覆盖
