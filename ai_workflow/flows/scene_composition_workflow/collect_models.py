@@ -75,6 +75,7 @@ def collect_models_node(state) -> Dict[str, Any]:
         item: Dict[str, Any] = {
             "object_id": row.get("object_id", row.get("item_name", "")),
             "name": row.get("item_name", ""),
+            "file_name": row.get("item_name", ""),
             "local_path": resolved_path,
         }
 

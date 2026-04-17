@@ -7,7 +7,6 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
-from config.paths_config import get_project_screenshots_dir
 from CoronaCore.core.managers import scene_manager
 from ai_workflow.streaming import stream_output_node
 from ai_workflow.flows.model_retrieval_workflow.temp_capture_storage import (
@@ -131,14 +130,6 @@ def _create_white_box_actors(scene, aabb: List[float], margin: float = 1.2) -> L
                 actor_type="mesh",
                 parent_scene=scene,
             )
-            # 白盒平面是纯视觉临时对象，必须关闭物理和回调，
-            # 否则物理线程持有 Python 闭包引用，remove_actor 时竞态 → SIGABRT
-            # 注意：on_move_callback 在 Actor.__init__ 中被自动注册，
-            # 力学系统对新 Actor 首帧因 last_pos=1e9 就认为「已移动」会立即入队；
-            # 必须在 add_actor 之前清除，防止 deferred 回调持有悬空 Python 引用。
-            actor.enable_collision_callback(False)
-            actor._mechanics.set_physics_enabled(False)
-            actor._mechanics.set_on_move_callback(lambda: None)
             actor.set_position(pos, True)
             actor.set_rotation(rot, True)
             actor.set_scale(scale, True)
@@ -152,24 +143,7 @@ def _create_white_box_actors(scene, aabb: List[float], margin: float = 1.2) -> L
 
 
 def _remove_white_box_actors(scene, actors: List[Any]) -> None:
-    """安全移除白盒 Actor：先清除 C++ 侧回调引用，等待一个物理帧，再 remove。"""
-    for actor in actors:
-        try:
-            actor.enable_collision_callback(False)
-            mech = getattr(actor, "_mechanics", None)
-            if mech is not None:
-                mech.set_physics_enabled(False)
-                mech.set_collision_callback(lambda *_: None)
-                mech.set_on_move_callback(lambda: None)
-        except Exception as exc:
-            logger.debug("清除白盒碰撞回调失败: %s", exc)
-
-    # 第二步：等待 2～3 个物理帧（~200ms），让力学线程完成所有 in-flight 的
-    # deferred on_move 回调，再让 optics 线程至少完成一帧渲染，
-    # 防止 remove_actor 时 geometry/optics handle 仍被渲染线程持有。
-    time.sleep(0.20)
-
-    # 第三步：安全移除
+    """移除白盒 Actor。"""
     for actor in actors:
         try:
             scene.remove_actor(actor)
@@ -237,6 +211,7 @@ def _run_capture_in_temp_scene(
     orig_fwd = list(active_camera.get_forward())
     orig_up  = list(active_camera.get_world_up())
     orig_fov = float(active_camera.get_fov())
+    orig_output_mode = active_camera.get_output_mode()
 
     try:
         # ── 1. 创建临时场景，禁止持久化 ─────────────────────────────────
@@ -269,10 +244,6 @@ def _run_capture_in_temp_scene(
             actor_type="mesh",
             parent_scene=temp_scene,
         )
-        # 纯截图对象：关闭物理、碰撞及移动回调，杜绝 deferred 回调持有悬空引用
-        actor.enable_collision_callback(False)
-        actor._mechanics.set_physics_enabled(False)
-        actor._mechanics.set_on_move_callback(lambda: None)
         temp_scene.add_actor(actor)
         time.sleep(1.0)  # 等待 GPU 资源（Mesh / Texture）加载完毕
 
@@ -342,7 +313,7 @@ def _run_capture_in_temp_scene(
                 up = [0.0, 1.0, 0.0]
 
             active_camera.set(position, fwd, up, fov)
-            time.sleep(0.15)  # 等待渲染管线刷新
+            time.sleep(0.3)  # 等待渲染管线刷新
 
             filepath      = os.path.join(output_dir, f"{view_name}.png")
             temp_filepath = make_temp_capture_path(temp_capture_root, str(actor_name), view_name)
@@ -391,7 +362,7 @@ def _run_capture_in_temp_scene(
             except Exception as exc:
                 logger.error("[Workflow][TempScene] 归还相机到主场景失败 (严重): %s", exc)
 
-        # 恢复相机姿态
+        # 恢复相机姿态（输出模式由外层调用方管理）
         try:
             active_camera.set(orig_pos, orig_fwd, orig_up, orig_fov)
         except Exception as exc:
@@ -403,6 +374,89 @@ def _run_capture_in_temp_scene(
             logger.info("[Workflow][TempScene] 临时场景已销毁: %s", temp_route)
 
     return view_dict
+
+
+def capture_single_result(
+    result: Dict[str, Any],
+    active_scene: Any,
+    temp_capture_root: Path,
+) -> dict | None:
+    """对单个生成结果执行六视图拍摄，返回 view_dict 或 None。
+
+    必须串行调用——共用主场景相机，不支持并发。
+    """
+    if result.get("error"):
+        return None
+    if result.get("source") != "generation":
+        return None
+    if result.get("review_passed"):
+        return None
+    if result.get("six_views_dict"):
+        return None
+
+    actor_name = result.get("object_id") or result.get("item_name")
+    raw_model_path = result.get("model_path")
+    parameter = (
+        result.get("parameter", {})
+        if isinstance(result.get("parameter"), dict)
+        else {}
+    )
+    has_mesh_pending = bool(parameter.get("has_mesh_pending", False))
+    wait_object_id = str(parameter.get("object_id") or actor_name or "")
+
+    if not actor_name or not raw_model_path:
+        return None
+
+    final_model_path = wait_mesh_then_resolve_model_file(
+        raw_model_path=str(raw_model_path),
+        wait_object_id=wait_object_id,
+        has_mesh_pending=has_mesh_pending,
+    )
+
+    if not final_model_path:
+        logger.warning(
+            "[Workflow][capture] %s 截图前模型未就绪，在 %s 及其子目录下未找到 .glb/.obj，跳过。",
+            actor_name,
+            raw_model_path,
+        )
+        return None
+
+    output_dir = os.path.dirname(final_model_path)
+    os.makedirs(output_dir, exist_ok=True)
+
+    active_camera = active_scene.find_camera(None)
+    if not active_camera:
+        logger.error(
+            "[Workflow][capture] 场景中没有可用相机，跳过 %s 截图",
+            actor_name,
+        )
+        return None
+
+    logger.info("[Workflow][capture] 正在为 %s 新开临时场景进行六视图截图...", actor_name)
+    orig_output_mode = active_camera.get_output_mode()
+    active_camera.set_output_mode("base_color")
+    try:
+        view_dict = _run_capture_in_temp_scene(
+            active_scene=active_scene,
+            active_camera=active_camera,
+            actor_name=actor_name,
+            final_model_path=final_model_path,
+            output_dir=output_dir,
+            temp_capture_root=temp_capture_root,
+        )
+    finally:
+        active_camera.set_output_mode(orig_output_mode)
+
+    if view_dict:
+        logger.info(
+            "[Workflow][capture] %s 六视图完成: %s/6",
+            actor_name,
+            len(view_dict),
+        )
+    else:
+        logger.error("[Workflow][capture] %s 六视图失败: 0/6", actor_name)
+
+    return view_dict if view_dict else None
 
 
 @stream_output_node("integrated", NO_OUTPUT)
@@ -421,7 +475,7 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
         logger.warning("[Workflow] 未加载任何场景，无法执行截图")
         return {"six_view_images": {}}
 
-    all_saved_views = {}
+    all_saved_views = dict(state.get("six_view_images", {}) or {})
     temp_capture_root = build_temp_capture_root()
 
     for result in model_results:
@@ -430,6 +484,11 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if result.get("source") != "generation":
             continue
         if result.get("review_passed"):
+            continue
+        if result.get("six_views_dict"):
+            actor_name = result.get("object_id") or result.get("item_name")
+            if actor_name:
+                all_saved_views[actor_name] = result["six_views_dict"]
             continue
 
         actor_name = result.get("object_id") or result.get("item_name")
@@ -455,25 +514,8 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
             )
             continue
 
-        # 确定截图输出目录
-        if os.path.isabs(raw_model_path):
-            model_dir = (
-                raw_model_path
-                if os.path.isdir(raw_model_path)
-                else os.path.dirname(raw_model_path)
-            )
-        else:
-            from CoronaCore.core.corona_editor import CoronaEditor
-            project_path = getattr(
-                CoronaEditor.CoronaEngine,
-                "active_project_path",
-                str(get_project_screenshots_dir()),
-            )
-            model_dir = os.path.join(project_path, raw_model_path)
-            model_dir = (
-                model_dir if os.path.isdir(model_dir) else os.path.dirname(model_dir)
-            )
-        output_dir = model_dir
+        # final_model_path 已是绝对路径，直接取其父目录作为截图输出目录
+        output_dir = os.path.dirname(final_model_path)
         os.makedirs(output_dir, exist_ok=True)
 
         # 获取主场景相机（持有渲染 surface，是截图的必要条件）
@@ -483,14 +525,19 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         logger.info("[Workflow] 正在为 %s 新开临时场景进行六视图截图...", actor_name)
-        view_dict = _run_capture_in_temp_scene(
-            active_scene=active_scene,
-            active_camera=active_camera,
-            actor_name=actor_name,
-            final_model_path=final_model_path,
-            output_dir=output_dir,
-            temp_capture_root=temp_capture_root,
-        )
+        orig_output_mode = active_camera.get_output_mode()
+        active_camera.set_output_mode("base_color")
+        try:
+            view_dict = _run_capture_in_temp_scene(
+                active_scene=active_scene,
+                active_camera=active_camera,
+                actor_name=actor_name,
+                final_model_path=final_model_path,
+                output_dir=output_dir,
+                temp_capture_root=temp_capture_root,
+            )
+        finally:
+            active_camera.set_output_mode(orig_output_mode)
 
         if view_dict:
             all_saved_views[actor_name] = view_dict

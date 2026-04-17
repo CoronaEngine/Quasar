@@ -100,6 +100,24 @@ def capture_screenshots_node(state) -> Dict[str, Any]:
         )
         return {}
 
+    # 切换到 base_color 输出模式（与物体层六视图保持一致）
+    active_camera = None
+    orig_output_mode = None
+    try:
+        from CoronaCore.core.managers import scene_manager as _sm
+        _scene = _sm.get("")
+        if _scene is None:
+            routes = _sm.list_all()
+            if routes:
+                _scene = _sm.get(routes[0])
+        if _scene:
+            active_camera = _scene.find_camera(None)
+        if active_camera:
+            orig_output_mode = active_camera.get_output_mode()
+            active_camera.set_output_mode("base_color")
+    except Exception as exc:
+        logger.warning("capture_screenshots: 无法切换 output_mode: %s", exc)
+
     logger.info(
         "capture_screenshots: 开始拍摄 %d 个视角 → %s",
         len(_SCENE_VIEW_ANGLES),
@@ -107,27 +125,34 @@ def capture_screenshots_node(state) -> Dict[str, Any]:
     )
 
     saved: List[str] = []
-    for az in _SCENE_VIEW_ANGLES:
-        pose = _calc_camera_pose(center, distance, az, _ELEVATION_DEG)
-        try:
-            move_tool.invoke({
-                "position": pose["position"],
-                "forward": pose["forward"],
-                "up": pose["up"],
-            })
-            time.sleep(0.2)  # 等渲染稳定
+    try:
+        for az in _SCENE_VIEW_ANGLES:
+            pose = _calc_camera_pose(center, distance, az, _ELEVATION_DEG)
+            try:
+                move_tool.invoke({
+                    "position": pose["position"],
+                    "forward": pose["forward"],
+                    "up": pose["up"],
+                })
+                time.sleep(0.2)  # 等渲染稳定
 
-            filename = f"scene_az{az:03d}.png"
-            filepath = os.path.join(output_dir, filename)
-            raw = shot_tool.invoke({"output_path": filepath})
-            result = _parse_tool_json(raw)
-            if result.get("status") == "success":
-                saved.append(filepath)
-                logger.debug("capture_screenshots: 已保存 %s", filepath)
-            else:
-                logger.warning("capture_screenshots: az=%d 截图失败: %s", az, result)
-        except Exception as exc:
-            logger.warning("capture_screenshots: az=%d 异常: %s", az, exc)
+                filename = f"scene_az{az:03d}.png"
+                filepath = os.path.join(output_dir, filename)
+                raw = shot_tool.invoke({"output_path": filepath, "output_mode": "base_color"})
+                result = _parse_tool_json(raw)
+                if result.get("status") == "success":
+                    saved.append(filepath)
+                    logger.debug("capture_screenshots: 已保存 %s", filepath)
+                else:
+                    logger.warning("capture_screenshots: az=%d 截图失败: %s", az, result)
+            except Exception as exc:
+                logger.warning("capture_screenshots: az=%d 异常: %s", az, exc)
+    finally:
+        if active_camera and orig_output_mode is not None:
+            try:
+                active_camera.set_output_mode(orig_output_mode)
+            except Exception as exc:
+                logger.warning("capture_screenshots: 恢复 output_mode 失败: %s", exc)
 
     logger.info(
         "capture_screenshots: 完成，共保存 %d/%d 张截图",
