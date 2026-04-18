@@ -190,28 +190,26 @@ def _run_capture_in_temp_scene(
 
     策略：
     1. 新建临时场景（禁止写磁盘）。
-    2. 将 active_camera（持有渲染 surface）从主场景 C++ 层迁移到临时场景，
-       主场景同时 set_enabled(False)，避免主场景 Actor 出现在截图中。
+    2. 创建离屏截图相机（不绑定 surface），纯离屏渲染。
+       同时禁用主场景渲染以节省 GPU 算力。
+       主场景的相机保持不动——不做任何迁移。
     3. 在临时场景中加载模型并构建白色封闭盒背景。
        白盒边长 = 相机轨道半径 × 3，确保相机始终在盒内、背景面充满画面。
-    4. 截图结束后归还相机、恢复主场景，销毁临时场景。
+    4. 截图结束后销毁截图相机、恢复主场景，销毁临时场景。
     """
     from CoronaCore.core.managers import scene_manager as sm
     from CoronaCore.core.entities.actor import Actor
+    from CoronaCore.core.entities.camera import Camera as PyCamera
 
     temp_route = f"__six_view_tmp_{uuid.uuid4().hex[:8]}__"
     temp_scene = None
     actor = None
+    capture_camera = None
     white_box_actors: List[Any] = []
     view_dict: dict = {}
-    camera_moved = False
 
-    # 保存相机状态（截图结束后恢复）
-    orig_pos = list(active_camera.get_position())
-    orig_fwd = list(active_camera.get_forward())
-    orig_up  = list(active_camera.get_world_up())
+    # 读取 active_camera 参数，用于初始化截图相机
     orig_fov = float(active_camera.get_fov())
-    orig_output_mode = active_camera.get_output_mode()
 
     try:
         # ── 1. 创建临时场景，禁止持久化 ─────────────────────────────────
@@ -219,22 +217,30 @@ def _run_capture_in_temp_scene(
         temp_scene.save_data = lambda: None  # 不写磁盘
         logger.info("[Workflow][TempScene] 创建临时场景: %s", temp_route)
 
-        # ── 2. 迁移 active_camera 到临时场景（直接操作 C++ 层，跳过 auto_save）─
-        #       先移除主场景的 C++ camera 注册，再禁用主场景渲染
-        active_scene.engine_scene.remove_camera(active_camera.engine_obj)
+        # ── 2. 创建离屏截图相机（无 surface，纯离屏渲染）────────────────
+        #       禁用主场景以节省 GPU 算力
         active_scene.set_enabled(False)
-        camera_moved = True
 
-        # 移除 temp_scene ensure_default_camera 自动创建的无 surface 相机
+        # 移除 ensure_default_camera 自动创建的默认相机
         for cam in list(temp_scene._cameras):
             temp_scene.engine_scene.remove_camera(getattr(cam, "engine_obj", cam))
         temp_scene._cameras.clear()
         temp_scene._main_camera = None
 
-        # 将 active_camera 注入临时场景（仅 C++ 层注册）
-        temp_scene.engine_scene.add_camera(active_camera.engine_obj)
-        temp_scene._cameras = [active_camera]
-        temp_scene._main_camera = active_camera
+        # 创建截图专用相机（离屏，不绑定任何 surface）
+        capture_camera = PyCamera(
+            position=[0.0, 0.0, 0.0],
+            forward=[0.0, 0.0, 1.0],
+            world_up=[0.0, 1.0, 0.0],
+            fov=orig_fov,
+            name="__six_view_capture_cam__",
+        )
+        # Camera 构造函数会自动绑定 default_surface，需显式清除以实现纯离屏渲染
+        capture_camera.set_surface(0)
+        capture_camera.set_output_mode("base_color")
+        temp_scene.engine_scene.add_camera(capture_camera.engine_obj)
+        temp_scene._cameras = [capture_camera]
+        temp_scene._main_camera = capture_camera
 
         # ── 3. 加载目标模型到临时场景 ────────────────────────────────────
         logger.info("[Workflow][TempScene] 加载模型: %s => %s", actor_name, final_model_path)
@@ -312,13 +318,13 @@ def _run_capture_in_temp_scene(
             else:
                 up = [0.0, 1.0, 0.0]
 
-            active_camera.set(position, fwd, up, fov)
+            capture_camera.set(position, fwd, up, fov)
             time.sleep(0.3)  # 等待渲染管线刷新
 
             filepath      = os.path.join(output_dir, f"{view_name}.png")
             temp_filepath = make_temp_capture_path(temp_capture_root, str(actor_name), view_name)
             saved = save_to_temp_then_move(
-                active_camera,
+                capture_camera,
                 temp_path=temp_filepath,
                 final_path=filepath,
                 actor_name=str(actor_name),
@@ -347,26 +353,20 @@ def _run_capture_in_temp_scene(
             except Exception as exc:
                 logger.warning("[Workflow][TempScene] 清理临时模型失败: %s", exc)
 
-        # 归还 active_camera：从临时场景移除，重新注入主场景，恢复渲染
-        if camera_moved:
-            if temp_scene is not None:
-                try:
-                    temp_scene.engine_scene.remove_camera(active_camera.engine_obj)
-                    temp_scene._cameras.clear()
-                    temp_scene._main_camera = None
-                except Exception as exc:
-                    logger.warning("[Workflow][TempScene] 从临时场景移除相机失败: %s", exc)
+        # 清理截图相机
+        if capture_camera is not None and temp_scene is not None:
             try:
-                active_scene.engine_scene.add_camera(active_camera.engine_obj)
-                active_scene.set_enabled(True)
+                temp_scene.engine_scene.remove_camera(capture_camera.engine_obj)
+                temp_scene._cameras.clear()
+                temp_scene._main_camera = None
             except Exception as exc:
-                logger.error("[Workflow][TempScene] 归还相机到主场景失败 (严重): %s", exc)
+                logger.warning("[Workflow][TempScene] 移除截图相机失败: %s", exc)
 
-        # 恢复相机姿态（输出模式由外层调用方管理）
+        # 恢复主场景渲染（主场景相机从未被移动，无需归还）
         try:
-            active_camera.set(orig_pos, orig_fwd, orig_up, orig_fov)
+            active_scene.set_enabled(True)
         except Exception as exc:
-            logger.warning("[Workflow][TempScene] 恢复相机状态失败: %s", exc)
+            logger.error("[Workflow][TempScene] 恢复主场景失败 (严重): %s", exc)
 
         # 销毁临时场景（从 scene_manager 注销，GC 回收 C++ 资源）
         if temp_scene is not None:
@@ -433,19 +433,14 @@ def capture_single_result(
         return None
 
     logger.info("[Workflow][capture] 正在为 %s 新开临时场景进行六视图截图...", actor_name)
-    orig_output_mode = active_camera.get_output_mode()
-    active_camera.set_output_mode("base_color")
-    try:
-        view_dict = _run_capture_in_temp_scene(
-            active_scene=active_scene,
-            active_camera=active_camera,
-            actor_name=actor_name,
-            final_model_path=final_model_path,
-            output_dir=output_dir,
-            temp_capture_root=temp_capture_root,
-        )
-    finally:
-        active_camera.set_output_mode(orig_output_mode)
+    view_dict = _run_capture_in_temp_scene(
+        active_scene=active_scene,
+        active_camera=active_camera,
+        actor_name=actor_name,
+        final_model_path=final_model_path,
+        output_dir=output_dir,
+        temp_capture_root=temp_capture_root,
+    )
 
     if view_dict:
         logger.info(
@@ -525,19 +520,14 @@ def six_view_capture_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         logger.info("[Workflow] 正在为 %s 新开临时场景进行六视图截图...", actor_name)
-        orig_output_mode = active_camera.get_output_mode()
-        active_camera.set_output_mode("base_color")
-        try:
-            view_dict = _run_capture_in_temp_scene(
-                active_scene=active_scene,
-                active_camera=active_camera,
-                actor_name=actor_name,
-                final_model_path=final_model_path,
-                output_dir=output_dir,
-                temp_capture_root=temp_capture_root,
-            )
-        finally:
-            active_camera.set_output_mode(orig_output_mode)
+        view_dict = _run_capture_in_temp_scene(
+            active_scene=active_scene,
+            active_camera=active_camera,
+            actor_name=actor_name,
+            final_model_path=final_model_path,
+            output_dir=output_dir,
+            temp_capture_root=temp_capture_root,
+        )
 
         if view_dict:
             all_saved_views[actor_name] = view_dict

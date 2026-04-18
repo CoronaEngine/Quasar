@@ -11,7 +11,7 @@ from ai_workflow.state import ModelRetrievalWorkflowState
 from ai_workflow.streaming import stream_output_node
 from ai_tools.context import reset_current_session, set_current_session
 
-from .constants import GENERATION_MAX_WORKERS
+from .constants import GENERATION_MAX_WORKERS, GENERATION_MAX_RETRIES, GENERATION_RETRY_DELAY
 from .formatters import (
     NO_OUTPUT,
     publish_node_progress,
@@ -100,7 +100,7 @@ def generate_single_item(
     generate_tool: Any,
     session_id: str,
 ) -> Dict[str, Any]:
-    """处理单个物体生成阶段。"""
+    """处理单个物体生成阶段，失败时自动重试。"""
     name = task["item_name"]
     object_id = task.get("object_id", "")
     image_url = task.get("input_image_url") or task.get("image_url", "")
@@ -125,66 +125,82 @@ def generate_single_item(
         result.update({"source": "generation", "error": error_message})
         return result
 
+    last_error = ""
     started_at = time.perf_counter()
-    logger.info("[Workflow][generate] %s 开始 3D 生成", name)
-    token = set_current_session(session_id)
 
-    try:
-        raw = generate_tool.invoke(
-            {
-                "mode": "image_to_3d",
-                "images": [image_url],
-                "object_id": object_id,
-            }
-        )
-        model_info = parse_3d_result(raw)
-        elapsed = time.perf_counter() - started_at
-
-        if model_info.get("error"):
-            error_message = str(model_info.get("error", "生成结果解析为空"))
-            logger.error(
-                "[Workflow][generate] %s 3D 生成失败: %s (elapsed=%.2fs)",
-                name,
-                error_message,
-                elapsed,
+    for attempt in range(1, GENERATION_MAX_RETRIES + 2):  # 1 initial + N retries
+        if attempt > 1:
+            delay = GENERATION_RETRY_DELAY * attempt
+            logger.warning(
+                "[Workflow][generate] %s 第 %s 次重试，等待 %.1fs...",
+                name, attempt - 1, delay,
             )
-            result.update({"source": "generation", "error": error_message})
+            time.sleep(delay)
+
+        logger.info("[Workflow][generate] %s 开始 3D 生成 (attempt %s/%s)",
+                    name, attempt, GENERATION_MAX_RETRIES + 1)
+        token = set_current_session(session_id)
+        try:
+            raw = generate_tool.invoke(
+                {
+                    "mode": "image_to_3d",
+                    "images": [image_url],
+                    "object_id": object_id,
+                }
+            )
+            model_info = parse_3d_result(raw)
+
+            if model_info.get("error"):
+                last_error = str(model_info.get("error", "生成结果解析为空"))
+                logger.error(
+                    "[Workflow][generate] %s 3D 生成失败 (attempt %s): %s",
+                    name, attempt, last_error,
+                )
+                continue  # retry
+
+            elapsed = time.perf_counter() - started_at
+            result.update(
+                {
+                    "source": "generation",
+                    "model_path": model_info.get("model_path", ""),
+                    "parameter": model_info.get("parameter", {}),
+                    "generation_elapsed_seconds": round(elapsed, 3),
+                }
+            )
             if search_error:
                 result["search_error"] = search_error
+            if attempt > 1:
+                result["generation_attempts"] = attempt
+
+            logger.info(
+                "[Workflow][generate] %s 3D 模型生成完成: %s (attempt %s, elapsed=%.2fs)",
+                name,
+                model_info.get("model_path", ""),
+                attempt,
+                elapsed,
+            )
             return result
+        except Exception as e:
+            last_error = str(e)
+            logger.error(
+                "[Workflow][generate] %s 3D 生成异常 (attempt %s): %s",
+                name, attempt, e,
+            )
+            continue  # retry
+        finally:
+            reset_current_session(token)
 
-        result.update(
-            {
-                "source": "generation",
-                "model_path": model_info.get("model_path", ""),
-                "parameter": model_info.get("parameter", {}),
-                "generation_elapsed_seconds": round(elapsed, 3),
-            }
-        )
-        if search_error:
-            result["search_error"] = search_error
-
-        logger.info(
-            "[Workflow][generate] %s 3D 模型生成完成: %s (elapsed=%.2fs)",
-            name,
-            model_info.get("model_path", ""),
-            elapsed,
-        )
-        return result
-    except Exception as e:
-        elapsed = time.perf_counter() - started_at
-        logger.error(
-            "[Workflow][generate] %s 3D 生成失败: %s (elapsed=%.2fs)",
-            name,
-            e,
-            elapsed,
-        )
-        result.update({"source": "generation", "error": str(e)})
-        if search_error:
-            result["search_error"] = search_error
-        return result
-    finally:
-        reset_current_session(token)
+    # All attempts exhausted
+    elapsed = time.perf_counter() - started_at
+    logger.error(
+        "[Workflow][generate] %s 3D 生成最终失败，已重试 %s 次 (elapsed=%.2fs): %s",
+        name, GENERATION_MAX_RETRIES, elapsed, last_error,
+    )
+    result.update({"source": "generation", "error": last_error})
+    if search_error:
+        result["search_error"] = search_error
+    result["generation_attempts"] = GENERATION_MAX_RETRIES + 1
+    return result
 
 
 def _drain_queue(q: "queue.Queue[Any]") -> None:
