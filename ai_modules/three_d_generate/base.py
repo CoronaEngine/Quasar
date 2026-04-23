@@ -183,7 +183,7 @@ def _handle_3d_generate_inner(
     cfg,
 ) -> str:
     try:
-        print("3D 生成请求数据：", request_data)
+        logger.debug("3D 生成请求数据：%s", request_data)
         init_session(session_id=session_id, input_type="3d", parameters=request_data)
         update_session_state(session_id, "running")
 

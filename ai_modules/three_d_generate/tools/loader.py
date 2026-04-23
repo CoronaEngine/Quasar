@@ -2,18 +2,21 @@
 多模态理解配置加载器
 """
 
+import logging
 from typing import Any, Mapping
 
 from ai_modules.three_d_generate.configs.dataclasses import Rodin3DSettings, Hunyuan3DSettings
 from ai_service.entrance import ai_entrance
 from ai_tools.helpers import _as_bool,_as_float
 
-print("加载 Rodin 3D 配置加载器")
+logger = logging.getLogger(__name__)
+
+logger.debug("加载 Rodin 3D 配置加载器")
 @ai_entrance.collector.register_loader("rodin3d")
 def _load_rodin_3d_config(raw: Mapping[str, Any] | None) -> Rodin3DSettings:
     """加载多模态理解配置"""
-    
-    print("加载 Rodin 3D 配置加载器")
+
+    logger.debug("加载 Rodin 3D 配置加载器")
     if not isinstance(raw, Mapping):
         return Rodin3DSettings()
 
@@ -33,12 +36,12 @@ def _load_rodin_3d_config(raw: Mapping[str, Any] | None) -> Rodin3DSettings:
     )
 
 
-print("加载混元 3D 配置加载器")
+logger.debug("加载混元 3D 配置加载器")
 @ai_entrance.collector.register_loader("hunyuan3d")
 def _load_hunyuan_3d_config(raw: Mapping[str, Any] | None) -> Hunyuan3DSettings:
     """加载混元3D配置"""
 
-    print("加载混元 3D 配置加载器")
+    logger.debug("加载混元 3D 配置加载器")
     if not isinstance(raw, Mapping):
         return Hunyuan3DSettings()
 

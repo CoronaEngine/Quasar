@@ -75,6 +75,8 @@ class ai_entrance:
                 config = yaml.safe_load(f)
 
             # 解析模块配置
+            loaded = {"configs": [], "base": [], "loader": []}
+            failed: list[str] = []
             if "modules" in config:
                 for module_data in config["modules"]:
                     if not module_data.get("enabled", False):
@@ -89,8 +91,9 @@ class ai_entrance:
                         try:
                             module_path = f"ai_modules.{module_name}.configs.settings"
                             importlib.import_module(module_path)
-                            logger.info(f"✓ 成功导入配置模块: {module_name}")
+                            loaded["configs"].append(module_name)
                         except Exception as e:
+                            failed.append(f"configs:{module_name}({e})")
                             logger.error(f"✗ 导入配置模块失败 {module_name}: {e}")
 
                     # 尝试导入 base.py
@@ -99,8 +102,9 @@ class ai_entrance:
                         try:
                             module_path = f"ai_modules.{module_name}.base"
                             importlib.import_module(module_path)
-                            logger.info(f"✓ 成功导入基础模块: {module_name}")
+                            loaded["base"].append(module_name)
                         except Exception as e:
+                            failed.append(f"base:{module_name}({e})")
                             logger.error(f"✗ 导入基础模块失败 {module_name}: {e}")
 
                     # 尝试导入 loader.py
@@ -109,9 +113,18 @@ class ai_entrance:
                         try:
                             module_path = f"ai_modules.{module_name}.tools.loader"
                             importlib.import_module(module_path)
-                            logger.info(f"✓ 成功导入loader模块: {module_name}")
+                            loaded["loader"].append(module_name)
                         except Exception as e:
+                            failed.append(f"loader:{module_name}({e})")
                             logger.error(f"✗ 导入loader模块失败 {module_name}: {e}")
+            logger.info(
+                "ai_modules imported: configs=%d base=%d loader=%d failed=%d",
+                len(loaded["configs"]),
+                len(loaded["base"]),
+                len(loaded["loader"]),
+                len(failed),
+            )
+            logger.debug("ai_modules detail: %s", loaded)
             _log_runtime_paths()
             ai_entrance.if_import = True
 
