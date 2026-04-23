@@ -27,7 +27,7 @@
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import Callable, List
 
 from langchain_core.tools import BaseTool
 
@@ -41,6 +41,26 @@ from ai_tools.registry import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# 宣主可扩展的内置 loader 注册钩子
+# ---------------------------------------------------------------------------
+
+_EXTRA_BUILTIN_REGISTRARS: List[Callable[[ToolRegistry], None]] = []
+
+
+def register_extra_builtin_registrar(
+    registrar: Callable[[ToolRegistry], None],
+) -> None:
+    """注入额外的内置 loader 注册函数。
+
+    宣主（如编辑器）可以在启动时调用本函数注册额外的引擎相关 loader。
+    注册函数会在首次的 :func:`load_tools` 中被调用一次。
+    """
+    if registrar in _EXTRA_BUILTIN_REGISTRARS:
+        return
+    _EXTRA_BUILTIN_REGISTRARS.append(registrar)
 
 
 # ===========================================================================
@@ -91,43 +111,8 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     )
 
     # -----------------------------------------------------------------------
-    # 场景操作工具（MCP）
-    # -----------------------------------------------------------------------
-
-    from ai_modules.mcp.tools.scene_tools import load_scene_tools
-    registry.register_loader(
-        loader=load_scene_tools,
-        category=ToolCategory.SCENE,
-        dependencies=[],
-        requires_config=False,
-        source="tools.mcp",
-    )
-
-    # -----------------------------------------------------------------------
-    # 摄像头操作工具（MCP）
-    # -----------------------------------------------------------------------
-
-    from ai_modules.mcp.tools.camera_tools import load_camera_tools
-    registry.register_loader(
-        loader=load_camera_tools,
-        category=ToolCategory.SCENE,
-        dependencies=[],
-        requires_config=False,
-        source="tools.mcp.camera",
-    )
-
-    # -----------------------------------------------------------------------
-    # 模型导入工具（MCP）
-    # -----------------------------------------------------------------------
-
-    from ai_modules.mcp.tools.model_import_tools import load_model_import_tools
-    registry.register_loader(
-        loader=load_model_import_tools,
-        category=ToolCategory.SCENE,
-        dependencies=[],
-        requires_config=False,
-        source="tools.mcp.model_import",
-    )
+    # 场景操作类、摄像头、模型导入等引擎相关工具已迁出 CAI；由宣主侧
+    # 通过 :func:`register_extra_builtin_registrar` 补齐。
 
     # -----------------------------------------------------------------------
     # 图像生成工具
@@ -277,33 +262,18 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     except ImportError as e:
         logger.warning("scene_breakdown tools not available (skipped): %s", e)
 
-# -----------------------------------------------------------------------
-#  场景布局json工具（placement）
-# -----------------------------------------------------------------------
-    from ai_modules.scene_placement.tools.placement_tools import load_placement_tools
+    # -----------------------------------------------------------------------
+    #  场景布局、场景审查等引擎相关工具已迁出 CAI，由宣主侧插入。
+    # -----------------------------------------------------------------------
 
-    registry.register_loader(
-        loader=load_placement_tools,
-        category=ToolCategory.SCENE,
-        dependencies=[
-            # ToolDependency(DependencyType.CONFIG_PROVIDER, provider="rodin"),
-        ],
-        requires_config=True,
-        source="tools.placement_tools",
-    )
-
-# -----------------------------------------------------------------------
-#  场景合理性审查工具（scene_review）
-# -----------------------------------------------------------------------
-    from ai_modules.mcp.tools.scene_review_tools import load_scene_review_tools
-
-    registry.register_loader(
-        loader=load_scene_review_tools,
-        category=ToolCategory.SCENE,
-        dependencies=[],
-        requires_config=False,
-        source="tools.mcp.scene_review",
-    )
+    # -----------------------------------------------------------------------
+    # 执行宣主注入的额外 loader 注册函数
+    # -----------------------------------------------------------------------
+    for fn in list(_EXTRA_BUILTIN_REGISTRARS):
+        try:
+            fn(registry)
+        except Exception as exc:
+            logger.exception("额外 builtin loader 注册函数执行失败: %s", exc)
 
 
 # ===========================================================================

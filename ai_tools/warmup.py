@@ -26,9 +26,27 @@ from __future__ import annotations
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, List, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# 宣主可注入的 app_config provider
+# ---------------------------------------------------------------------------
+
+_app_config_provider: Optional[Callable[[], Any]] = None
+
+
+def set_app_config_provider(provider: Optional[Callable[[], Any]]) -> None:
+    """注入宣主侧的全局应用配置获取器，传 ``None`` 可清除。"""
+    global _app_config_provider
+    _app_config_provider = provider
+
+
+def get_app_config_provider() -> Optional[Callable[[], Any]]:
+    """获取当前已注入的 app_config 获取器（可能为 None）。"""
+    return _app_config_provider
 
 
 # ---------------------------------------------------------------------------
@@ -51,12 +69,13 @@ def warmup_configs() -> None:
     except Exception as e:
         logger.debug(f"AI 配置预热跳过: {e}")
 
-    try:
-        from config.app_config import get_app_config
-
-        get_app_config()
-    except Exception as e:
-        logger.debug(f"App 配置预热跳过: {e}")
+    if _app_config_provider is not None:
+        try:
+            _app_config_provider()
+        except Exception as e:
+            logger.debug(f"App 配置预热跳过: {e}")
+    else:
+        logger.debug("App 配置预热跳过: 未注入 app_config_provider")
 
 
 def warmup_storage() -> None:

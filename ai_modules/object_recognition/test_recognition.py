@@ -7,7 +7,7 @@
     3. 端到端流程：远端入库 → 搜索
 
 运行方式:
-    cd d:/CodeLib/CoronaEngine/editor/CabbageEditor/plugins/AITool/CoronaArtificialIntelligence
+    cd <CAI 仓库根目录>
     python -m ai_modules.object_recognition.test_recognition
 
 或直接运行:
@@ -26,11 +26,8 @@ from pathlib import Path
 import numpy as np
 
 ai_root = Path(__file__).resolve().parents[2]
-editor_root = Path(__file__).resolve().parents[5]
-for path in (ai_root, editor_root):
-    path_str = str(path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
+if str(ai_root) not in sys.path:
+    sys.path.insert(0, str(ai_root))
 
 if __package__ in (None, ""):
     __package__ = "ai_modules.object_recognition"

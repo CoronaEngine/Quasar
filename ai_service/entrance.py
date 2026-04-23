@@ -79,7 +79,7 @@ class ai_entrance:
                 for module_data in config["modules"]:
                     if not module_data.get("enabled", False):
                         logger.debug(f"跳过禁用模块: {module_data.get('name', '')}")
-                        return
+                        continue
                     module_name = module_data.get("name", "")
                     module_dir = os.path.join(modules_path, module_name)
 

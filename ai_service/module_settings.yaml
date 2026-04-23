@@ -28,8 +28,8 @@ modules:
     description: "多模态理解模型"
 
   - name: mcp
-    enabled: true
-    description: "模型控制协议"
+    enabled: false
+    description: "模型控制协议（引擎相关，需宣主侧提供实现后启用）"
 
   # AI能力模块
   - name: text_generate
@@ -61,8 +61,8 @@ modules:
     description: "场景分解"
 
   - name: scene_placement
-    enabled: true
-    description: "场景布置"
+    enabled: false
+    description: "场景布置（引擎相关，需宣主侧提供实现后启用）"
 
   # 识别与检测模块
   - name: object_recognition

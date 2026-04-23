@@ -38,11 +38,6 @@ _current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _current_dir not in sys.path:
     sys.path.insert(0, _current_dir)
 
-# 确保 CabbageEditor 目录在 Python 路径中（用于导入 config 等顶级模块）
-_cabbage_editor_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-if _cabbage_editor_dir not in sys.path:
-    sys.path.insert(0, _cabbage_editor_dir)
-
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
 
