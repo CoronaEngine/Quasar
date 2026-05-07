@@ -153,9 +153,6 @@ def register_entrance(handler_name: str = None):
 
 
 def get_ai_entrance():
-    from ai_service import entrance
+    from cai import get_default_runtime
 
-    _AI_ENTRANCE_CLASS = entrance.ai_entrance
-    if not _AI_ENTRANCE_CLASS.if_import:
-        _AI_ENTRANCE_CLASS.reimport()
-    return _AI_ENTRANCE_CLASS
+    return get_default_runtime().get_ai_entrance()
