@@ -35,17 +35,30 @@ class CAIRuntime:
         registries: dict[str, Any] | None = None,
     ):
         self._ai_entrance_provider = ai_entrance_provider or _load_default_ai_entrance
+        self.metadata: dict[str, Any] = {}
+        self.entrance_handlers: dict[str, Any] = {}
         self.registries = self._create_default_registries()
         if registries:
             self.registries.update(registries)
-        self.plugins: list[Any] = []
+        from .plugins import PluginManager
+
+        self.plugin_manager = PluginManager(self)
 
     def get_ai_entrance(self):
         return self._ai_entrance_provider()
 
     def chat_stream(self, payload: dict) -> Iterator[str]:
-        handler = getattr(self.get_ai_entrance(), "handle_integrated_entrance_stream")
+        handler = self.get_entrance_handler("handle_integrated_entrance_stream")
         yield from handler(payload)
+
+    def register_entrance_handler(self, name: str, handler: Any) -> None:
+        self.entrance_handlers[name] = handler
+
+    def get_entrance_handler(self, name: str):
+        handler = self.entrance_handlers.get(name)
+        if handler is not None:
+            return handler
+        return getattr(self.get_ai_entrance(), name)
 
     def get_registry(self, name: str):
         registry = self.registries[name]
@@ -54,17 +67,10 @@ class CAIRuntime:
         return registry
 
     def register_plugin(self, plugin: Any) -> None:
-        register = getattr(plugin, "register", None)
-        if register is None:
-            raise TypeError("CAI plugin must expose register(runtime)")
-        register(self)
-        self.plugins.append(plugin)
+        self.plugin_manager.register(plugin)
 
     def shutdown(self) -> None:
-        for plugin in reversed(self.plugins):
-            shutdown = getattr(plugin, "shutdown", None)
-            if shutdown is not None:
-                shutdown(self)
+        self.plugin_manager.shutdown()
 
     @staticmethod
     def _create_default_registries() -> dict[str, Any]:

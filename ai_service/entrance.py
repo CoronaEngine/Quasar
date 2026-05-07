@@ -2,12 +2,9 @@ import functools
 import logging
 import os
 
-import importlib
 import sys
 import threading
 from typing import Callable
-
-import yaml
 
 project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_dir)
@@ -66,63 +63,19 @@ class ai_entrance:
         with cls._lock:
             if cls.if_import:
                 return
-            modules_path = os.path.join(project_dir, "ai_modules")
+            from cai import get_default_runtime
 
-            config_path = os.path.join(
-                project_dir, "ai_service", "module_settings.yaml"
+            runtime = get_default_runtime()
+            loaded = runtime.plugin_manager.load_module_settings(
+                os.path.join(project_dir, "ai_service", "module_settings.yaml"),
+                os.path.join(project_dir, "ai_modules"),
             )
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-
-            # 解析模块配置
-            loaded = {"configs": [], "base": [], "loader": []}
-            failed: list[str] = []
-            if "modules" in config:
-                for module_data in config["modules"]:
-                    if not module_data.get("enabled", False):
-                        logger.debug(f"跳过禁用模块: {module_data.get('name', '')}")
-                        continue
-                    module_name = module_data.get("name", "")
-                    module_dir = os.path.join(modules_path, module_name)
-
-                    # 尝试导入 configs/settings.py
-                    settings_path = os.path.join(module_dir, "configs", "settings.py")
-                    if os.path.exists(settings_path):
-                        try:
-                            module_path = f"ai_modules.{module_name}.configs.settings"
-                            importlib.import_module(module_path)
-                            loaded["configs"].append(module_name)
-                        except Exception as e:
-                            failed.append(f"configs:{module_name}({e})")
-                            logger.error(f"✗ 导入配置模块失败 {module_name}: {e}")
-
-                    # 尝试导入 base.py
-                    base_path = os.path.join(module_dir, "base.py")
-                    if os.path.exists(base_path):
-                        try:
-                            module_path = f"ai_modules.{module_name}.base"
-                            importlib.import_module(module_path)
-                            loaded["base"].append(module_name)
-                        except Exception as e:
-                            failed.append(f"base:{module_name}({e})")
-                            logger.error(f"✗ 导入基础模块失败 {module_name}: {e}")
-
-                    # 尝试导入 loader.py
-                    loader_path = os.path.join(module_dir, "tools", "loader.py")
-                    if os.path.exists(loader_path):
-                        try:
-                            module_path = f"ai_modules.{module_name}.tools.loader"
-                            importlib.import_module(module_path)
-                            loaded["loader"].append(module_name)
-                        except Exception as e:
-                            failed.append(f"loader:{module_name}({e})")
-                            logger.error(f"✗ 导入loader模块失败 {module_name}: {e}")
             logger.info(
                 "ai_modules imported: configs=%d base=%d loader=%d failed=%d",
                 len(loaded["configs"]),
                 len(loaded["base"]),
                 len(loaded["loader"]),
-                len(failed),
+                len(loaded["failed"]),
             )
             logger.debug("ai_modules detail: %s", loaded)
             _log_runtime_paths()
@@ -147,6 +100,12 @@ def register_entrance(handler_name: str = None):
             return func(*args, **kwargs)
 
         setattr(ai_entrance, method_name, staticmethod(wrapper))
+        try:
+            from cai import get_default_runtime
+
+            get_default_runtime().register_entrance_handler(method_name, wrapper)
+        except Exception as exc:
+            logger.debug("runtime entrance handler register skipped for %s: %s", method_name, exc)
         return wrapper
 
     return decorator
