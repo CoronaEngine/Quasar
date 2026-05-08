@@ -4,6 +4,8 @@ CoronaArtificialIntelligence, or CAI, is the AI runtime used by CabbageEditor. I
 
 The physical directory remains under CabbageEditor as a submodule. Standalone usage is supported through editable install or by importing the package from its parent directory.
 
+CabbageEditor-side adapter code imports CAI with the same package name used by external hosts, for example `from CoronaArtificialIntelligence.cai import CAIApp`. CAI package internals still use package-relative imports to keep internal modules movable within the package.
+
 ## Install For Development
 
 From this directory:

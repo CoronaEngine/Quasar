@@ -7,7 +7,7 @@
     3. 端到端流程：远端入库 → 搜索
 
 运行方式:
-    python -m plugins.AITool.CoronaArtificialIntelligence.ai_modules.object_recognition.test_recognition
+    python -m CoronaArtificialIntelligence.ai_modules.object_recognition.test_recognition
 """
 
 from __future__ import annotations
