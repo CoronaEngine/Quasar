@@ -1,58 +1,58 @@
 # CoronaArtificialIntelligence
 
-AI模块加载，根据ai功能划分模块并通过配置实现动态加载
+CoronaArtificialIntelligence, or CAI, is the AI runtime used by CabbageEditor. It now exposes a small public facade for host integration while keeping the legacy module loading system compatible.
 
----
+The physical directory remains under CabbageEditor as a submodule. Standalone usage is supported through editable install or by importing the package from its parent directory.
 
-- 1、项目根目录/ai_service/entrance.py
-  - 初始化ai_entrance类
-  - 配置文件: 项目根目录/service/module_settings.yaml
-    - 根据yaml顺序加载modules目录下的模块
-      - name —— 模块名
-      - enabled —— 是否加载
-      - description —— 描述
+## Install For Development
 
----
+From this directory:
 
-- 2、ai_modules 模块文件结构
-  - 根目录/
-    - configs/
-      - dataclasses.py config基类
-      - prompts.py ai提示词
-      - settings.py ai配置
-    - tools
-      - loader.py config生成器
-      - 。。。其他工具
-    - base.py 功能接口
+```powershell
+python -m pip install -e .
+```
 
----
+Optional dependency groups:
 
-- 3、模块收集装饰器 ConfigCollector
-  - settings配置
-    - 保存ai设置
-    - @ai_entrance.collector.register_setting(str)
-  - loader生成
-    - 获取保存的ai设置并通过函数将config集成进AIConfig中(需要注册settings)
-    - @ai_entrance.collector.register_loader(str)
+```powershell
+python -m pip install -e ".[langchain,workflow,media]"
+python -m pip install -e ".[web]"
+python -m pip install -e ".[object-recognition]"
+```
 
----
+`cabbage` is intentionally empty in this package because the CabbageEditor adapter lives beside the submodule in `plugins/AITool/cai_extensions`.
 
-- 4、ai_entrance使用
-  - register_entrance接口注册
-    - 将模块函数注册进ai_entrance对象中
-    - @register_entrance(handler_name=func_name)
-  - 接口使用
-    - @register_entrance(handler_name="handle_text_generation")
-      def handle_text_generation(payload: Any)
-    - ai_entrance().handle_text_generation(payload)
+## Public Facade
 
----
+```python
+from CoronaArtificialIntelligence.cai import CAIApp, ChatRequest, StreamEvent
 
-## 其他模块
+app = CAIApp()
+request = ChatRequest.from_text("请总结这段文字", session_id="demo")
 
-- ai_agent/ 会话存储
-- ai_media_resource/ 文件处理
-- ai_workflow/ 工作流
-- ai_models/
-- ai_config/
-- ai_tools/ 工具
+for chunk in app.chat_stream(request):
+    event = StreamEvent.from_legacy_chunk(chunk)
+    print(event.to_dict())
+```
+
+The facade currently wraps the legacy integrated stream handler. New host code should call `CAIApp`; old code can continue to use `ai_service.entrance.get_ai_entrance()`.
+
+## Examples
+
+- `examples/cli_chat.py`: minimal CLI-style script.
+- `examples/fastapi_websocket.py`: FastAPI WebSocket integration sketch.
+- `cai-chat`: console script installed by `pyproject.toml`.
+
+## Architecture Notes
+
+- `cai/`: public facade, runtime, protocol, and plugin manager.
+- `ai_service/entrance.py`: legacy entrance compatibility layer.
+- `ai_modules/`: feature modules loaded from `ai_service/module_settings.yaml`.
+- `ai_tools/`: tool registry, response adapter, session helpers, and tool loading.
+- `ai_workflow/`: workflow registries and LangGraph execution helpers.
+- `ai_media_resource/`: media registry and storage adapters.
+- `ai_agent/`: agent execution and conversation history.
+
+## Documentation
+
+See `docs/API_REFERENCE.md` for the public API surface and packaging notes.
