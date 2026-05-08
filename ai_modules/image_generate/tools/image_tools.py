@@ -6,21 +6,21 @@ from langchain_core.tools import StructuredTool
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
-from ai_config.ai_config import AIConfig
+from ....ai_config.ai_config import AIConfig
 # , MediaToolConfig)
-from ai_tools.context import get_current_session
-from ai_media_resource import (
+from ....ai_tools.context import get_current_session
+from ....ai_media_resource import (
     get_media_registry,
     get_storage_adapter,
     calculate_expire_time,
 )
-from ai_tools.response_adapter import (
+from ....ai_tools.response_adapter import (
     build_part,
     build_success_result,
     build_error_result,
 )
-from ai_modules.image_generate.configs.prompts import IMAGE_PROMPTS
-from ai_models.base_pool import (
+from ..configs.prompts import IMAGE_PROMPTS
+from ....ai_models.base_pool import (
     get_pool_registry,
     MediaCategory,
     ImageRequest,

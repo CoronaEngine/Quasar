@@ -22,8 +22,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, Optional, Union
 
-from ai_config.ai_config import get_ai_config
-from ai_media_resource.result import StorageResult
+from ..ai_config.ai_config import get_ai_config
+from .result import StorageResult
 
 logger = logging.getLogger(__name__)
 

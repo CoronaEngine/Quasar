@@ -85,7 +85,7 @@ def _tool_store_object(
     调用核心执行函数，处理错误并返回序列化结果。
     支持图片自动去重和数量限制。
     """
-    from ai_tools.response_adapter import build_success_result, build_error_result
+    from ....ai_tools.response_adapter import build_success_result, build_error_result
 
     result = core_execute_object_store(
         cfg=cfg,
@@ -129,7 +129,7 @@ def _tool_search_object(
     调用核心执行函数，处理错误并返回序列化结果。
     内化距离阈值判断，返回"hit"字段供工作流使用。
     """
-    from ai_tools.response_adapter import build_success_result, build_error_result
+    from ....ai_tools.response_adapter import build_success_result, build_error_result
 
     result = core_execute_object_search(
         cfg=cfg,

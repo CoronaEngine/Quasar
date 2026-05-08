@@ -3,18 +3,11 @@ from __future__ import annotations
 import ast
 import importlib
 import logging
-import os
 import pkgutil
-import sys
 import threading
 
 from pathlib import Path
 from typing import Dict, Optional
-
-# 确保 ai_workflow 模块在 Python 路径中
-_current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _current_dir not in sys.path:
-    sys.path.insert(0, _current_dir)
 
 logger = logging.getLogger(__name__)
 
@@ -147,18 +140,17 @@ class WorkflowCommandRegistry:
                 self._discovered = True
                 return 0
 
-            package_name = "ai_workflow.flows"
             for module_info in pkgutil.iter_modules([str(flows_path)]):
                 if module_info.name.startswith("_"):
                     continue
 
-                module_name = f"{package_name}.{module_info.name}"
+                module_name = f".flows.{module_info.name}"
                 if module_info.ispkg:
                     module_path = flows_path / module_info.name / "__init__.py"
                 else:
                     module_path = flows_path / f"{module_info.name}.py"
                 try:
-                    module = importlib.import_module(module_name)
+                    module = importlib.import_module(module_name, __package__)
                     workflow_commands = getattr(module, "WORKFLOW_COMMANDS", None)
                 except Exception as exc:
                     logger.warning(

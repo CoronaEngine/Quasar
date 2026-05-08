@@ -63,7 +63,7 @@ def warmup_configs() -> None:
     - get_app_config(): 全局应用配置（路径等）
     """
     try:
-        from ai_config.ai_config import get_ai_config
+        from ..ai_config.ai_config import get_ai_config
 
         get_ai_config()
     except Exception as e:
@@ -96,7 +96,7 @@ def warmup_storage() -> None:
         logger.debug(f"媒体存储预热跳过: {e}")
 
     try:
-        from ai_media_resource import (
+        from ..ai_media_resource import (
             get_media_registry,
         )
 
@@ -105,7 +105,7 @@ def warmup_storage() -> None:
         logger.debug(f"媒体注册表预热跳过: {e}")
 
     try:
-        from ai_agent.conversation_store import (
+        from ..ai_agent.conversation_store import (
             get_conversation_store,
         )
 
@@ -114,7 +114,7 @@ def warmup_storage() -> None:
         logger.debug(f"会话存储预热跳过: {e}")
 
     try:
-        from ai_tools.concurrency import (
+        from .concurrency import (
             get_concurrency_manager,
         )
 
@@ -133,7 +133,7 @@ def warmup_account_pools() -> None:
     注意：这会从配置加载账号并注册到池，后续媒体生成工具依赖此池。
     """
     try:
-        from ai_models.base_pool import (
+        from ..ai_models.base_pool import (
             initialize_account_pools,
         )
 
@@ -156,7 +156,7 @@ def warmup_http_clients() -> None:
     - _get_music_http_client(): 音乐生成 HTTP 客户端
     """
     try:
-        from ai_modules.image_generate.tools.client_image import (
+        from ..ai_modules.image_generate.tools.client_image import (
             _get_image_http_client,
         )
 
@@ -165,7 +165,7 @@ def warmup_http_clients() -> None:
         logger.debug(f"图像客户端预热跳过: {e}")
 
     try:
-        from ai_modules.speech_generate.tools.client_speech import (
+        from ..ai_modules.speech_generate.tools.client_speech import (
             _get_tts_http_client,
         )
 
@@ -174,7 +174,7 @@ def warmup_http_clients() -> None:
         logger.debug(f"TTS 客户端预热跳过: {e}")
 
     try:
-        from ai_modules.music_generate.tools.client_music import (
+        from ..ai_modules.music_generate.tools.client_music import (
             _get_music_http_client,
         )
 
@@ -194,8 +194,8 @@ def warmup_tools() -> None:
     注意：这会触发所有工具加载器执行。
     """
     try:
-        from ai_tools import load_tools
-        from ai_config.ai_config import get_ai_config
+        from . import load_tools
+        from ..ai_config.ai_config import get_ai_config
 
         config = get_ai_config()
         tools = load_tools(config)
@@ -214,7 +214,7 @@ def warmup_agent() -> None:
     注意：这会创建 LLM 实例，但不会发送实际请求。
     """
     try:
-        from ai_agent.executor import create_default_agent
+        from ..ai_agent.executor import create_default_agent
 
         create_default_agent()
     except Exception as e:
@@ -231,7 +231,7 @@ def warmup_workflows() -> None:
     注意：这会预编译所有 LangGraph StateGraph，便于首次请求快速响应。
     """
     try:
-        from ai_workflow.registry import (
+        from ..ai_workflow.registry import (
             get_workflow_registry,
         )
 

@@ -9,14 +9,14 @@ def prepare_stream_context(request_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     准备流式 Agent 所需的上下文：解析 session、history、用户媒体，构建 pending_history。
     """
-    from ai_agent.protocol import (
+    from ...ai_agent.protocol import (
         build_media_history_assistant_message,
         extract_session_id,
         extract_user_parts,
         wrap_part_as_assistant_message,
     )
-    from ai_agent.conversation import default_session_id, get_history
-    from ai_media_resource import get_media_registry
+    from ...ai_agent.conversation import default_session_id, get_history
+    from ...ai_media_resource import get_media_registry
 
     session_id = extract_session_id(request_data, default_session_id())
     stored_history = get_history(session_id)

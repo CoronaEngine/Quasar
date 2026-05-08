@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from ai_config.prompts import ToolPromptConfig
+from ....ai_config.prompts import ToolPromptConfig
 
 
 # ── 物体入库工具提示词 ──────────────────────────────────────────────

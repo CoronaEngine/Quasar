@@ -3,8 +3,8 @@
 """
 
 from typing import Any, Mapping
-from ai_modules.network.configs.dataclasses import NetworkConfig
-from ai_service.entrance import ai_entrance
+from ..configs.dataclasses import NetworkConfig
+from ....ai_service.entrance import ai_entrance
 
 @ai_entrance.collector.register_loader('network')
 def _load_network_config(raw: Mapping[str, Any] | None) -> NetworkConfig:

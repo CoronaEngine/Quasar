@@ -4,9 +4,9 @@
 
 from typing import Any, Mapping
 
-from ai_modules.session.configs.dataclasses import SessionConfig
+from ..configs.dataclasses import SessionConfig
 
-from ai_service.entrance import ai_entrance
+from ....ai_service.entrance import ai_entrance
 
 @ai_entrance.collector.register_loader('session')
 def _load_session_config(raw: Mapping[str, Any] | None) -> SessionConfig:

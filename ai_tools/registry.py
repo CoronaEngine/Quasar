@@ -51,7 +51,7 @@ from typing import (
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
 
-    from ai_config.ai_config import AIConfig
+    from ..ai_config.ai_config import AIConfig
 
 logger = logging.getLogger(__name__)
 
@@ -422,7 +422,7 @@ class ToolRegistry:
             # 如果没有传入 config，尝试获取
             # if config is None:
             try:
-                from ai_config.ai_config import (
+                from ..ai_config.ai_config import (
                     get_ai_config,
                 )
 
@@ -671,7 +671,7 @@ def check_dependencies(
 
         elif dep.type == DependencyType.MEDIA_REGISTRY:
             try:
-                from ai_media_resource import (
+                from ..ai_media_resource import (
                     get_media_registry,
                 )
 
@@ -682,7 +682,7 @@ def check_dependencies(
 
         elif dep.type == DependencyType.STORAGE_ADAPTER:
             try:
-                from ai_media_resource import (
+                from ..ai_media_resource import (
                     get_storage_adapter,
                 )
 

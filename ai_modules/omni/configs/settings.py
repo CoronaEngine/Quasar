@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict
-from ai_service.entrance import ai_entrance
+from ....ai_service.entrance import ai_entrance
 
 # ===========================================================================
 # 多模态理解配置 - 默认预设

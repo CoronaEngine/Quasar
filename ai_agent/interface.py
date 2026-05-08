@@ -4,17 +4,17 @@ from __future__ import annotations
 from typing import Any, Dict, List
 from langchain_core.messages import HumanMessage, AIMessage
 
-from ai_agent.executor import (
+from .executor import (
     run_agent,
     fallback_completion,
 )
-from ai_media_resource import get_media_registry
-from ai_agent.conversation import (
+from ..ai_media_resource import get_media_registry
+from .conversation import (
     default_session_id,
     get_history,
     update_history,
 )
-from ai_agent.protocol import (
+from .protocol import (
     extract_session_id,
     extract_assistant_messages,
     extract_user_parts,
@@ -22,7 +22,7 @@ from ai_agent.protocol import (
     wrap_part_as_assistant_message,
     build_media_history_assistant_message,
 )
-from ai_tools.context import (
+from ..ai_tools.context import (
     reset_current_session,
     set_current_session,
 )

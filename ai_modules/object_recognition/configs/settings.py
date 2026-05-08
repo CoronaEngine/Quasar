@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from ai_service.entrance import ai_entrance
-from ai_config.paths_config import get_default_paths
+from ....ai_service.entrance import ai_entrance
+from ....ai_config.paths_config import get_default_paths
 
 
 @ai_entrance.collector.register_setting("object_recognition")

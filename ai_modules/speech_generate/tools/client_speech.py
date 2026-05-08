@@ -8,8 +8,8 @@ import uuid
 from typing import Optional, Dict, Any, Tuple
 import httpx
 
-from ai_models.utils import TaskPoller
-from ai_modules.speech_generate.configs.dataclasses import SpeechAppConfig, SpeechAudioConfig
+from ....ai_models.utils import TaskPoller
+from ..configs.dataclasses import SpeechAppConfig, SpeechAudioConfig
 
 # 全局共享 HTTP 客户端连接池（线程安全）
 _TTS_HTTP_CLIENT: Optional[httpx.Client] = None

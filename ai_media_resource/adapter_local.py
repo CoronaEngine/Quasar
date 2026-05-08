@@ -16,11 +16,11 @@ from typing import Optional
 
 import requests
 
-from ai_media_resource.adapter_base import (
+from .adapter_base import (
     StorageAdapter,
     normalize_to_data_uri,
 )
-from ai_media_resource.result import StorageResult
+from .result import StorageResult
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ class LocalStorageAdapter(StorageAdapter):
     def _resolve_save_path(self) -> Path:
         """解析本地存储路径：优先使用项目路径下的 media/ 目录，未配置时自动推算"""
         try:
-            from ai_config.paths_config import get_project_media_dir
+            from ..ai_config.paths_config import get_project_media_dir
 
             return get_project_media_dir()
         except Exception:

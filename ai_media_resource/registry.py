@@ -20,13 +20,13 @@ import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from ai_config.ai_config import get_ai_config
-from ai_media_resource.adapter_factory import (
+from ..ai_config.ai_config import get_ai_config
+from .adapter_factory import (
     resolve_cache_url,
 )
-from ai_media_resource.record import MediaRecord
-from ai_media_resource.result import StorageResult
-from ai_media_resource.task_executor import (
+from .record import MediaRecord
+from .result import StorageResult
+from .task_executor import (
     TaskStatus,
     get_task_executor,
 )

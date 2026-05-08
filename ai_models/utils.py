@@ -18,7 +18,7 @@ from typing import Any, Callable, TypeVar, Tuple, Optional
 
 from PIL import Image
 
-from ai_modules.providers.configs.dataclasses import ProviderConfig
+from ..ai_modules.providers.configs.dataclasses import ProviderConfig
 
 
 # ========== 通用客户端基类 ==========
@@ -66,7 +66,7 @@ def resize_image_with_constraints(
     # 获取配置默认值
     if max_size is None or min_size is None:
         try:
-            from ai_config.ai_config import get_ai_config
+            from ..ai_config.ai_config import get_ai_config
 
             config = get_ai_config()
             if max_size is None:
@@ -238,7 +238,7 @@ class TaskPoller:
         # 获取配置默认值
         if interval is None or timeout is None:
             try:
-                from ai_config.ai_config import (
+                from ..ai_config.ai_config import (
                     get_ai_config,
                 )
 

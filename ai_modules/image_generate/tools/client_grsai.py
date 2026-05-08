@@ -8,8 +8,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from ai_models.utils import BaseAPIClient
-from ai_modules.providers.configs.dataclasses import ProviderConfig
+from ....ai_models.utils import BaseAPIClient
+from ...providers.configs.dataclasses import ProviderConfig
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +136,7 @@ class GrsaiImageClient(BaseAPIClient):
 
             # fileid:// 先解析到真实 URL，仅保留 HTTP(S)
             if source.startswith("fileid://"):
-                from ai_media_resource import get_media_registry
+                from ....ai_media_resource import get_media_registry
 
                 file_id = source[9:].lstrip("/")
                 try:

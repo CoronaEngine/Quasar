@@ -34,7 +34,7 @@ class ThreadSafeConversationStore:
             or max_messages_per_session is None
         ):
             try:
-                from ai_config.ai_config import (
+                from ..ai_config.ai_config import (
                     get_ai_config,
                 )
 

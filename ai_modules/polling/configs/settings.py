@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict
-from ai_service.entrance import ai_entrance
+from ....ai_service.entrance import ai_entrance
 
 # 异步任务轮询配置
 @ai_entrance.collector.register_setting("polling")

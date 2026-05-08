@@ -5,9 +5,9 @@
 import os
 from typing import Any, Mapping
 
-from ai_modules.speech_generate.configs.dataclasses import TTSConfig, AudioConfig
+from ..configs.dataclasses import TTSConfig, AudioConfig
 
-from ai_service.entrance import ai_entrance
+from ....ai_service.entrance import ai_entrance
 
 
 @ai_entrance.collector.register_loader("audio")

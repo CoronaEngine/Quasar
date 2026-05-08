@@ -6,7 +6,7 @@
 
 from dataclasses import dataclass, field
 
-from ai_config.paths_config import get_default_paths
+from ....ai_config.paths_config import get_default_paths
 
 
 def _default_assets_model_path() -> str:

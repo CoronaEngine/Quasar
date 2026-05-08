@@ -21,9 +21,9 @@ from .adapter_base import (
     StorageAdapter,
     normalize_to_data_uri,
 )
-from ai_media_resource.cache import get_memory_cache
-from ai_media_resource.config import MEMORY_CACHE_CONFIG
-from ai_media_resource.result import StorageResult
+from .cache import get_memory_cache
+from .config import MEMORY_CACHE_CONFIG
+from .result import StorageResult
 
 logger = logging.getLogger(__name__)
 

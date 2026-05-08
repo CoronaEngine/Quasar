@@ -1,4 +1,4 @@
-from ai_config.ai_types import AIConfig
+from ..ai_config.ai_types import AIConfig
 from typing import Dict, Any
 import copy
 

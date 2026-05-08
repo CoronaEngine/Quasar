@@ -5,10 +5,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from ai_modules.providers.configs.dataclasses import ProviderConfig
+from ...providers.configs.dataclasses import ProviderConfig
 
 # from config.ai_config import ProviderConfig
-from ai_models.utils import (
+from ....ai_models.utils import (
     retry_operation,
     BaseAPIClient,
     file_url_to_data_uri,
@@ -141,7 +141,7 @@ class LingyaImageClient(BaseAPIClient):
                 continue
             # 如果是 fileid:// URL，解析为真实 URL
             if source.startswith("fileid://"):
-                from ai_media_resource import get_media_registry
+                from ....ai_media_resource import get_media_registry
 
                 file_id = source[9:].lstrip("/")
                 try:

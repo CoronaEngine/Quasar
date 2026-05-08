@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Dict, List
 
-from ai_tools.context import get_current_session
+from .context import get_current_session
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ def resolve_parts(
     - 调用 media_registry.resolve() 获取真实 URL
     - 如果返回值包含 extra_file_ids，递归解析所有附加文件
     """
-    from ai_media_resource import get_media_registry
+    from ..ai_media_resource import get_media_registry
 
     registry = get_media_registry()
     resolved_parts = []

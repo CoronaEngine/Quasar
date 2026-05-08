@@ -5,9 +5,9 @@
 import logging
 from typing import Any, Mapping
 
-from ai_modules.three_d_generate.configs.dataclasses import Rodin3DSettings, Hunyuan3DSettings
-from ai_service.entrance import ai_entrance
-from ai_tools.helpers import _as_bool,_as_float
+from ..configs.dataclasses import Rodin3DSettings, Hunyuan3DSettings
+from ....ai_service.entrance import ai_entrance
+from ....ai_tools.helpers import _as_bool,_as_float
 
 logger = logging.getLogger(__name__)
 

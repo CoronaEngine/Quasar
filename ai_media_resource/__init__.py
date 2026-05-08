@@ -29,14 +29,14 @@
 from __future__ import annotations
 
 # 配置
-from ai_media_resource.config import (
+from .config import (
     MEMORY_CACHE_CONFIG,
     URL_TTL_HOURS,
     calculate_expire_time,
 )
 
 # 内存缓存
-from ai_media_resource.cache import (
+from .cache import (
     CacheEntry,
     MemoryCache,
     get_memory_cache,
@@ -44,28 +44,28 @@ from ai_media_resource.cache import (
 )
 
 # 数据结构
-from ai_media_resource.result import StorageResult
-from ai_media_resource.record import MediaRecord
+from .result import StorageResult
+from .record import MediaRecord
 
 # 存储适配器
-from ai_media_resource.adapter_base import (
+from .adapter_base import (
     StorageAdapter,
     normalize_to_data_uri,
 )
-from ai_media_resource.adapter_local import (
+from .adapter_local import (
     LocalStorageAdapter,
 )
-from ai_media_resource.adapter_cloud import (
+from .adapter_cloud import (
     CloudStorageAdapter,
 )
-from ai_media_resource.adapter_factory import (
+from .adapter_factory import (
     get_storage_adapter,
     reset_storage_adapter,
     resolve_cache_url,
 )
 
 # 异步任务执行器
-from ai_media_resource.task_executor import (
+from .task_executor import (
     TaskExecutor,
     TaskRecord,
     TaskStatus,
@@ -74,7 +74,7 @@ from ai_media_resource.task_executor import (
 )
 
 # 媒体注册表
-from ai_media_resource.registry import (
+from .registry import (
     MediaResourceRegistry,
     get_media_registry,
     reset_media_registry,

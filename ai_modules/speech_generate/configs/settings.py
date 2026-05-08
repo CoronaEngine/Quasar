@@ -12,7 +12,7 @@ from typing import Any, Dict
 # 实际的 appid 和 token 应放在 InnerAgentWorkflow/ai_config/media/base.py 中
 # ===========================================================================
 
-from ai_service.entrance import ai_entrance
+from ....ai_service.entrance import ai_entrance
 
 
 @ai_entrance.collector.register_setting("audio")

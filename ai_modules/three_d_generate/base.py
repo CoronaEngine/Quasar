@@ -7,10 +7,10 @@ import tempfile
 
 import httpx
 
-from ai_config.ai_config import get_ai_config
-from ai_service.entrance import register_entrance
+from ...ai_config.ai_config import get_ai_config
+from ...ai_service.entrance import register_entrance
 
-from ai_tools.common import (
+from ...ai_tools.common import (
     ensure_dict,
     build_error_response,
     build_success_response,
@@ -19,14 +19,14 @@ from ai_tools.common import (
     parse_tool_response,
     pick_tool,
 )
-from ai_tools.concurrency import session_concurrency
-from ai_tools.helpers import request_time_diff
-from ai_tools.request_parser import (
+from ...ai_tools.concurrency import session_concurrency
+from ...ai_tools.helpers import request_time_diff
+from ...ai_tools.request_parser import (
     extract_prompt_from_llm_content,
     extract_images_from_request,
 )
 
-from ai_tools.session_tracking import (
+from ...ai_tools.session_tracking import (
     init_session,
     update_session_state,
     set_session_error,
@@ -203,7 +203,7 @@ def _handle_3d_generate_inner(
             raise ValueError("缺少 3D 生成输入：llm_content(text/image) 或 images/image_path/image_url/prompt")
 
         # 加载 3D tools
-        from ai_modules.three_d_generate.tools.model_tools import load_3d_tools, load_hunyuan3d_tools
+        from .tools.model_tools import load_3d_tools, load_hunyuan3d_tools
 
         # 优先尝试混元3D，如果配置了的话
         tools = []
@@ -268,7 +268,7 @@ def _handle_3d_generate_inner(
             raise RuntimeError("3D 生成未返回有效 parts")
 
         # 输出阶段 resolve（fileid:// -> 可访问 URL），保持与 video/text 一致
-        from ai_tools.response_adapter import resolve_parts
+        from ...ai_tools.response_adapter import resolve_parts
         cleaned_parts = resolve_parts(cleaned_parts, timeout=150.0)
 
         update_session_state(session_id, "completed")

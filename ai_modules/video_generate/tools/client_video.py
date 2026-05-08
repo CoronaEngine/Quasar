@@ -9,12 +9,12 @@ from http import HTTPStatus
 from typing import Dict, Any, Tuple, Optional
 from dashscope import VideoSynthesis
 
-from ai_models.utils import (
+from ....ai_models.utils import (
     retry_operation,
     TaskPoller,
     BaseAPIClient,
 )
-from ai_modules.providers.configs.dataclasses import ProviderConfig
+from ...providers.configs.dataclasses import ProviderConfig
 
 
 class DashScopeVideoClient(BaseAPIClient):

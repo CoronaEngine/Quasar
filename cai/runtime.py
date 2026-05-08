@@ -11,7 +11,8 @@ class LazyRegistryRef:
 
     def resolve(self):
         if self._value is None:
-            module = import_module(self._module_name)
+            package = __package__ if self._module_name.startswith(".") else None
+            module = import_module(self._module_name, package)
             self._value = getattr(module, self._getter_name)()
         return self._value
 
@@ -20,7 +21,7 @@ class LazyRegistryRef:
 
 
 def _load_default_ai_entrance():
-    from ai_service import entrance
+    from ..ai_service import entrance
 
     entrance_cls = entrance.ai_entrance
     if not entrance_cls.if_import:
@@ -37,6 +38,7 @@ class CAIRuntime:
         self._ai_entrance_provider = ai_entrance_provider or _load_default_ai_entrance
         self.metadata: dict[str, Any] = {}
         self.entrance_handlers: dict[str, Any] = {}
+        self.capabilities: dict[str, Any] = {}
         self.registries = self._create_default_registries()
         if registries:
             self.registries.update(registries)
@@ -66,6 +68,20 @@ class CAIRuntime:
             return registry.resolve()
         return registry
 
+    def set_registry(self, name: str, registry: Any) -> None:
+        self.registries[name] = registry
+
+    def set_capability(self, name: str, value: Any) -> None:
+        self.capabilities[name] = value
+
+    def get_capability(self, name: str, default: Any = None) -> Any:
+        return self.capabilities.get(name, default)
+
+    def register_tool_loader_registrar(self, registrar: Callable[[Any], None]) -> None:
+        registrars = self.capabilities.setdefault("tool_loader_registrars", [])
+        if registrar not in registrars:
+            registrars.append(registrar)
+
     def register_plugin(self, plugin: Any) -> None:
         self.plugin_manager.register(plugin)
 
@@ -75,19 +91,19 @@ class CAIRuntime:
     @staticmethod
     def _create_default_registries() -> dict[str, Any]:
         return {
-            "config": LazyRegistryRef("ai_config.ai_config", "get_ai_config"),
-            "tool": LazyRegistryRef("ai_tools.registry", "get_tool_registry"),
-            "workflow": LazyRegistryRef("ai_workflow.registry", "get_workflow_registry"),
+            "config": LazyRegistryRef("..ai_config.ai_config", "get_ai_config"),
+            "tool": LazyRegistryRef("..ai_tools.registry", "get_tool_registry"),
+            "workflow": LazyRegistryRef("..ai_workflow.registry", "get_workflow_registry"),
             "workflow_command": LazyRegistryRef(
-                "ai_workflow.command_registry",
+                "..ai_workflow.command_registry",
                 "get_workflow_command_registry",
             ),
-            "media": LazyRegistryRef("ai_media_resource", "get_media_registry"),
+            "media": LazyRegistryRef("..ai_media_resource", "get_media_registry"),
             "conversation": LazyRegistryRef(
-                "ai_agent.conversation_store",
+                "..ai_agent.conversation_store",
                 "get_conversation_store",
             ),
-            "model": LazyRegistryRef("ai_models.base_pool", "get_pool_registry"),
+            "model": LazyRegistryRef("..ai_models.base_pool", "get_pool_registry"),
         }
 
 

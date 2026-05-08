@@ -10,17 +10,17 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 
-from ai_config.ai_config import AIConfig
-from ai_media_resource import get_media_registry
-from ai_tools.context import get_current_session
-from ai_tools.response_adapter import (
+from ....ai_config.ai_config import AIConfig
+from ....ai_media_resource import get_media_registry
+from ....ai_tools.context import get_current_session
+from ....ai_tools.response_adapter import (
     build_part,
     build_success_result,
     build_error_result,
 )
-from ai_config.paths_config import get_project_models_dir, _get_active_project_path
-from ai_modules.three_d_generate.tools.client_3d import Rodin3DClient
-from ai_modules.three_d_generate.tools.client_hunyuan3d import Hunyuan3DClient
+from ....ai_config.paths_config import get_project_models_dir, _get_active_project_path
+from .client_3d import Rodin3DClient
+from .client_hunyuan3d import Hunyuan3DClient
 
 import re
 import urllib.parse

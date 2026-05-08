@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-from ai_media_resource.config import MEMORY_CACHE_CONFIG
+from .config import MEMORY_CACHE_CONFIG
 
 logger = logging.getLogger(__name__)
 

@@ -14,18 +14,18 @@ import logging
 import threading
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from ai_models.base_pool.category import MediaCategory
-from ai_models.base_pool.requests import MediaRequest
-from ai_models.base_pool.responses import (
+from .category import MediaCategory
+from .requests import MediaRequest
+from .responses import (
     MediaResult,
     MultiMediaResult,
     ChatResult,
 )
-from ai_models.base_pool.legacy_fallback import (
+from .legacy_fallback import (
     create_legacy_task,
     clear_legacy_clients,
 )
-from ai_modules.providers.configs.dataclasses import ProviderConfig
+from ...ai_modules.providers.configs.dataclasses import ProviderConfig
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,7 @@ class _LegacyPoolStub:
     def is_available(self) -> bool:
         """检查旧客户端是否可用"""
         if self._available is None:
-            from ai_models.base_pool.legacy_fallback import (
+            from .legacy_fallback import (
                 get_legacy_client,
             )
 
@@ -283,7 +283,7 @@ class PoolRegistry:
                 OmniRequest as InnerOmniRequest,
                 DetectionRequest as InnerDetectionRequest,
             )
-            from ai_models.base_pool.requests import (
+            from .requests import (
                 ImageRequest,
                 VideoRequest,
                 SpeechRequest,
@@ -533,11 +533,11 @@ def get_chat_model(
     异常:
     - RuntimeError: 如果无法获取 LLM 客户端
     """
-    from ai_config.ai_config import (
+    from ...ai_config.ai_config import (
         get_ai_config,
         # ProviderConfig,
     )
-    from ai_modules.text_generate.tools.client_openai import build_openai_chat
+    from ...ai_modules.text_generate.tools.client_openai import build_openai_chat
 
     config = get_ai_config()
     chat_cfg = config.chat

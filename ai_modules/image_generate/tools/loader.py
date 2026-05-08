@@ -4,12 +4,12 @@
 
 from typing import Any, Mapping
 
-from ai_modules.image_generate.configs.dataclasses import (
+from ..configs.dataclasses import (
     ImageConstraintsConfig,
     ImageToolConfig,
 )
-from ai_service.entrance import ai_entrance
-from ai_tools.helpers import _as_bool
+from ....ai_service.entrance import ai_entrance
+from ....ai_tools.helpers import _as_bool
 
 
 @ai_entrance.collector.register_loader("image")

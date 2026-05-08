@@ -11,14 +11,14 @@ import os
 import threading
 from typing import Optional
 
-from ai_media_resource.adapter_base import StorageAdapter
-from ai_media_resource.adapter_cloud import (
+from .adapter_base import StorageAdapter
+from .adapter_cloud import (
     CloudStorageAdapter,
 )
-from ai_media_resource.adapter_local import (
+from .adapter_local import (
     LocalStorageAdapter,
 )
-from ai_media_resource.config import MEMORY_CACHE_CONFIG
+from .config import MEMORY_CACHE_CONFIG
 
 logger = logging.getLogger(__name__)
 

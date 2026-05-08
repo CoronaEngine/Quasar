@@ -5,11 +5,11 @@
 import os
 from typing import Any, Mapping
 
-from ai_modules.music_generate.configs.dataclasses import (
+from ..configs.dataclasses import (
     MusicConfig,
 )
 
-from ai_service.entrance import ai_entrance
+from ....ai_service.entrance import ai_entrance
 
 
 @ai_entrance.collector.register_loader('music')

@@ -4,9 +4,9 @@ from __future__ import annotations
 from typing import Any, Dict
 import logging
 
-from ai_config.ai_config import get_ai_config
+from ...ai_config.ai_config import get_ai_config
 
-from ai_tools.common import (
+from ...ai_tools.common import (
     ensure_dict,
     build_error_response,
     build_success_response,
@@ -14,11 +14,11 @@ from ai_tools.common import (
     extract_parameter,
     parse_tool_response,
 )
-from ai_tools.concurrency import session_concurrency
-from ai_service.entrance import register_entrance
-from ai_tools.helpers import request_time_diff
-from ai_tools.request_parser import extract_prompt_from_llm_content
-from ai_tools.session_tracking import (
+from ...ai_tools.concurrency import session_concurrency
+from ...ai_service.entrance import register_entrance
+from ...ai_tools.helpers import request_time_diff
+from ...ai_tools.request_parser import extract_prompt_from_llm_content
+from ...ai_tools.session_tracking import (
     update_session_state,
     set_session_error,
     init_session,
@@ -105,7 +105,7 @@ def _handle_speech_generation_inner(
         if not text:
             raise ValueError("缺少待合成的文本")
 
-        from ai_modules.speech_generate.tools.speech_tools import (
+        from .tools.speech_tools import (
             load_speech_tools,
         )
 
@@ -158,7 +158,7 @@ def _handle_speech_generation_inner(
             raise RuntimeError("语音合成未返回有效的音频部分")
 
         # 解析 parts 中的 fileid:// URL（返回真实 OSS URL 给用户）
-        from ai_tools.response_adapter import (
+        from ...ai_tools.response_adapter import (
             resolve_parts,
         )
 

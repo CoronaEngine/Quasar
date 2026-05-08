@@ -7,8 +7,8 @@ from typing import Any, Dict
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 
-from ai_agent.executor import stream_agent
-from ai_tools.common import build_error_response
+from ...ai_agent.executor import stream_agent
+from ...ai_tools.common import build_error_response
 
 from .common import (
     ToolError,
@@ -75,7 +75,7 @@ def _inject_global_assets_context(
 ) -> list:
     """若 session 存在 global_assets，在 history 开头注入摘要 SystemMessage。"""
     try:
-        from ai_workflow.loop_state import get_loop_global_assets
+        from ...ai_workflow.loop_state import get_loop_global_assets
 
         assets = get_loop_global_assets(session_id)
         if not assets:
@@ -114,8 +114,8 @@ def handle_integrated_entrance_stream_inner(
             yield build_stream_done_signal(session_id, metadata)
             return
 
-        from ai_agent.protocol import extract_tool_media_parts
-        from ai_agent.conversation import update_history
+        from ...ai_agent.protocol import extract_tool_media_parts
+        from ...ai_agent.conversation import update_history
 
         ctx = prepare_stream_context(request_data)
         session_id = ctx["session_id"]

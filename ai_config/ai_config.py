@@ -15,7 +15,7 @@ import threading
 
 from typing import Any, Dict, Optional
 
-from ai_config.ai_types import AIConfig
+from .ai_types import AIConfig
 
 # ---------------------------------------------------------------------------
 # 模块级缓存
@@ -48,7 +48,7 @@ def _apply_env_overrides(data: Dict[str, Any]) -> None:
 
 def _load_ai_config_data() -> Dict[str, Any]:
     """从 ai_settings 模块加载配置"""
-    from ai_service.entrance import ai_entrance
+    from ..ai_service.entrance import ai_entrance
 
     data = copy.deepcopy(ai_entrance.collector.AI_SETTINGS)
     # print(data)
@@ -67,7 +67,7 @@ def _build_ai_config() -> AIConfig:
     _load_ai_config_data()
     # print(raw)
     # providers = _load_providers(raw.get("providers"))
-    from ai_service.entrance import get_ai_entrance
+    from ..ai_service.entrance import get_ai_entrance
 
     providers = get_ai_entrance().collector.AIConfig.providers
     if not providers:
@@ -93,7 +93,7 @@ def reload_ai_config() -> AIConfig:
     with _AI_CONFIG_LOCK:
         _AI_CACHE = _build_ai_config()
         try:
-            from ai_models.base_pool.registry import reset_pool_registry
+            from ..ai_models.base_pool.registry import reset_pool_registry
 
             reset_pool_registry()
         except Exception:

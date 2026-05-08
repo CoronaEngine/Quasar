@@ -15,7 +15,7 @@ import time
 from contextlib import contextmanager
 from typing import Dict, Optional, Tuple
 
-from ai_config.ai_config import get_ai_config, AIConfig
+from ..ai_config.ai_config import get_ai_config, AIConfig
 
 logger = logging.getLogger(__name__)
 

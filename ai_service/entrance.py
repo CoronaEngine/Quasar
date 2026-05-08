@@ -2,14 +2,12 @@ import functools
 import logging
 import os
 
-import sys
 import threading
 from typing import Callable
 
 project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(project_dir)
 
-from ai_tools.ai_config_collector import ConfigCollector
+from ..ai_tools.ai_config_collector import ConfigCollector
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +15,7 @@ logger = logging.getLogger(__name__)
 def _log_runtime_paths() -> None:
     """在 AI 模块完成启动后输出路径解析结果。"""
     try:
-        from ai_config.paths_config import (
+        from ..ai_config.paths_config import (
             _get_active_project_path,
             get_default_paths,
             get_project_media_dir,
@@ -63,12 +61,13 @@ class ai_entrance:
         with cls._lock:
             if cls.if_import:
                 return
-            from cai import get_default_runtime
+            from ..cai import get_default_runtime
 
             runtime = get_default_runtime()
             loaded = runtime.plugin_manager.load_module_settings(
                 os.path.join(project_dir, "ai_service", "module_settings.yaml"),
                 os.path.join(project_dir, "ai_modules"),
+                package_base="...ai_modules",
             )
             logger.info(
                 "ai_modules imported: configs=%d base=%d loader=%d failed=%d",
@@ -101,7 +100,7 @@ def register_entrance(handler_name: str = None):
 
         setattr(ai_entrance, method_name, staticmethod(wrapper))
         try:
-            from cai import get_default_runtime
+            from ..cai import get_default_runtime
 
             get_default_runtime().register_entrance_handler(method_name, wrapper)
         except Exception as exc:
@@ -112,6 +111,6 @@ def register_entrance(handler_name: str = None):
 
 
 def get_ai_entrance():
-    from cai import get_default_runtime
+    from ..cai import get_default_runtime
 
     return get_default_runtime().get_ai_entrance()

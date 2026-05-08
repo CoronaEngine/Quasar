@@ -4,10 +4,10 @@ from __future__ import annotations
 from typing import Any, Dict
 import logging
 
-from ai_agent.conversation import default_session_id
-from ai_config.ai_config import get_ai_config
+from ...ai_agent.conversation import default_session_id
+from ...ai_config.ai_config import get_ai_config
 
-from ai_tools.common import (
+from ...ai_tools.common import (
     ensure_dict,
     build_error_response,
     build_success_response,
@@ -16,11 +16,11 @@ from ai_tools.common import (
     extract_parameter,
     parse_tool_response,
 )
-from ai_tools.concurrency import session_concurrency
-from ai_service.entrance import register_entrance
-from ai_tools.helpers import request_time_diff
-from ai_tools.request_parser import extract_prompt_from_llm_content
-from ai_tools.session_tracking import (
+from ...ai_tools.concurrency import session_concurrency
+from ...ai_service.entrance import register_entrance
+from ...ai_tools.helpers import request_time_diff
+from ...ai_tools.request_parser import extract_prompt_from_llm_content
+from ...ai_tools.session_tracking import (
     init_session,
     update_session_state,
     set_session_error,
@@ -104,7 +104,7 @@ def _handle_text_generation_inner(
         if text_type not in ["product", "marketing", "creative"]:
             raise ValueError(f"不支持的文案类型: {text_type}")
 
-        from ai_modules.text_generate.tools.text_tools import load_text_tools
+        from .tools.text_tools import load_text_tools
 
         tools = load_text_tools(cfg)
         if not tools:
@@ -175,7 +175,7 @@ def _handle_text_generation_inner(
             raise RuntimeError("文案生成未返回有效的文本部分")
 
         # 解析 parts 中的 fileid:// URL（如有媒体内容）
-        from ai_tools.response_adapter import (
+        from ...ai_tools.response_adapter import (
             resolve_parts,
         )
 

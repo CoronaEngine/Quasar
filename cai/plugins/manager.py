@@ -36,12 +36,13 @@ class ModulePluginSpec:
 
 
 class LegacyModulePlugin:
-    def __init__(self, spec: ModulePluginSpec, modules_path: Path):
+    def __init__(self, spec: ModulePluginSpec, modules_path: Path, package_base: str | None = None):
         self.spec = spec
         self.name = spec.name
         self.enabled = spec.enabled
         self.description = spec.description
         self._modules_path = modules_path
+        self._package_base = package_base or spec.module_base
 
     def register(self, runtime) -> dict[str, Any]:
         if not self.enabled:
@@ -52,9 +53,9 @@ class LegacyModulePlugin:
         loaded: list[str] = []
         failed: list[str] = []
 
-        self._try_import("configs", module_dir / "configs" / "settings.py", f"{self.spec.module_base}.{self.name}.configs.settings", loaded, failed)
-        self._try_import("base", module_dir / "base.py", f"{self.spec.module_base}.{self.name}.base", loaded, failed)
-        self._try_import("loader", module_dir / "tools" / "loader.py", f"{self.spec.module_base}.{self.name}.tools.loader", loaded, failed)
+        self._try_import("configs", module_dir / "configs" / "settings.py", f"{self._package_base}.{self.name}.configs.settings", loaded, failed)
+        self._try_import("base", module_dir / "base.py", f"{self._package_base}.{self.name}.base", loaded, failed)
+        self._try_import("loader", module_dir / "tools" / "loader.py", f"{self._package_base}.{self.name}.tools.loader", loaded, failed)
 
         result = {
             "name": self.name,
@@ -69,7 +70,8 @@ class LegacyModulePlugin:
         if not path.exists():
             return
         try:
-            importlib.import_module(module_path)
+            package = __package__ if module_path.startswith(".") else None
+            importlib.import_module(module_path, package)
             loaded.append(kind)
         except Exception as exc:
             failed.append(f"{kind}:{self.name}({exc})")
@@ -89,7 +91,12 @@ class PluginManager:
         self.plugins.append(plugin)
         return result if isinstance(result, dict) else {"name": getattr(plugin, "name", "unknown")}
 
-    def load_module_settings(self, config_path: str | Path, modules_path: str | Path) -> dict[str, Any]:
+    def load_module_settings(
+        self,
+        config_path: str | Path,
+        modules_path: str | Path,
+        package_base: str | None = None,
+    ) -> dict[str, Any]:
         config_path = Path(config_path)
         modules_path = Path(modules_path)
         with config_path.open("r", encoding="utf-8") as stream:
@@ -98,7 +105,7 @@ class PluginManager:
         summary = {"configs": [], "base": [], "loader": [], "failed": [], "disabled": []}
         for module_data in config.get("modules", []):
             spec = ModulePluginSpec.from_dict(module_data)
-            plugin = LegacyModulePlugin(spec, modules_path)
+            plugin = LegacyModulePlugin(spec, modules_path, package_base)
             result = self.register(plugin)
             if not spec.enabled:
                 summary["disabled"].append(spec.name)

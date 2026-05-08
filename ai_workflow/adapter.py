@@ -20,14 +20,14 @@ import logging
 import shlex
 from typing import Any, Dict, List, Optional
 
-from ai_workflow.bridge import first_text_part, text_parts
-from ai_workflow.state import (
+from .bridge import first_text_part, text_parts
+from .state import (
     WorkflowState,
     create_initial_state,
     deep_merge_dict,
 )
-from ai_workflow.loop_state import get_loop_global_assets
-from ai_tools.common import (
+from .loop_state import get_loop_global_assets
+from ..ai_tools.common import (
     ensure_dict,
     extract_parameter,
     build_success_response,

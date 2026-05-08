@@ -4,29 +4,29 @@ from __future__ import annotations
 from typing import Any, Dict
 import logging
 
-from ai_config.ai_config import get_ai_config
+from ...ai_config.ai_config import get_ai_config
 
-from ai_tools.common import (
+from ...ai_tools.common import (
     ensure_dict,
     build_error_response,
     build_success_response,
     extract_parameter,
     parse_tool_response,
 )
-from ai_tools.concurrency import session_concurrency
-from ai_service.entrance import register_entrance
-from ai_tools.helpers import request_time_diff
-from ai_tools.request_parser import (
+from ...ai_tools.concurrency import session_concurrency
+from ...ai_service.entrance import register_entrance
+from ...ai_tools.helpers import request_time_diff
+from ...ai_tools.request_parser import (
     normalize_image_size,
     extract_prompt_from_llm_content,
     extract_images_from_request,
 )
-from ai_tools.session_tracking import (
+from ...ai_tools.session_tracking import (
     init_session,
     update_session_state,
     set_session_error,
 )
-from ai_tools.workflow_executor import (
+from ...ai_tools.workflow_executor import (
     extract_function_id,
     execute_workflow,
 )
@@ -134,7 +134,7 @@ def _handle_image_generation_inner(
         if not prompt:
             raise ValueError("缺少图像生成的 prompt")
 
-        from ai_modules.image_generate.tools.image_tools import (
+        from .tools.image_tools import (
             load_image_tools,
         )
 
@@ -209,7 +209,7 @@ def _handle_image_generation_inner(
                 cleaned_parts.insert(0, {"content_type": "text", "content_text": prompt})
 
         # 解析 parts 中的 fileid:// URL（返回真实 OSS URL 给用户）
-        from ai_tools.response_adapter import (
+        from ...ai_tools.response_adapter import (
             resolve_parts,
         )
 

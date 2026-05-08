@@ -4,7 +4,7 @@ import json
 
 from typing import Dict, Generator, Optional
 
-from ai_tools.common import build_success_response
+from ....ai_tools.common import build_success_response
 
 
 def build_integrated_text_response(

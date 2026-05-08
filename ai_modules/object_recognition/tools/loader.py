@@ -14,8 +14,8 @@ from ..configs.dataclasses import (
     RecognitionConfig,
     VectorDBConfig,
 )
-from ai_service.entrance import ai_entrance
-from ai_tools.helpers import _as_bool
+from ....ai_service.entrance import ai_entrance
+from ....ai_tools.helpers import _as_bool
 
 
 @ai_entrance.collector.register_loader("object_recognition")

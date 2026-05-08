@@ -4,9 +4,9 @@ import logging
 
 from typing import Any, Dict, Generator, Optional, Tuple
 
-from ai_workflow.bridge import RequestContext, normalize_int_function_id
-from ai_workflow.executor import stream_workflow_from_request
-from ai_workflow.loop_state import set_loop_global_assets
+from ....ai_workflow.bridge import RequestContext, normalize_int_function_id
+from ....ai_workflow.executor import stream_workflow_from_request
+from ....ai_workflow.loop_state import set_loop_global_assets
 
 from .response import inject_function_id_to_review_stream, single_stream_response
 

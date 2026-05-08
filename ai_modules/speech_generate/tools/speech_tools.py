@@ -8,19 +8,19 @@ import logging
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 
-from ai_config.ai_config import AIConfig
-from ai_tools.context import get_current_session
-from ai_media_resource import (
+from ....ai_config.ai_config import AIConfig
+from ....ai_tools.context import get_current_session
+from ....ai_media_resource import (
     get_media_registry,
     get_storage_adapter,
 )
-from ai_tools.response_adapter import (
+from ....ai_tools.response_adapter import (
     build_part,
     build_success_result,
     build_error_result,
 )
-from ai_modules.speech_generate.configs.prompts import SPEECH_PROMPTS
-from ai_models.base_pool import (
+from ..configs.prompts import SPEECH_PROMPTS
+from ....ai_models.base_pool import (
     get_pool_registry,
     MediaCategory,
     SpeechRequest,
@@ -117,7 +117,7 @@ def load_speech_tools(config: AIConfig):
 
         # 获取默认采样率
         try:
-            from ai_config.ai_config import get_ai_config
+            from ....ai_config.ai_config import get_ai_config
 
             ai_config = get_ai_config()
             sample_rate = ai_config.audio.sample_rate

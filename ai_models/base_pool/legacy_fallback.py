@@ -15,8 +15,8 @@ from typing import Any, Callable, Dict, Optional, Union
 
 import httpx
 
-from ai_models.base_pool.category import MediaCategory
-from ai_models.base_pool.requests import (
+from .category import MediaCategory
+from .requests import (
     MediaRequest,
     ImageRequest,
     VideoRequest,
@@ -26,15 +26,15 @@ from ai_models.base_pool.requests import (
     OmniRequest,
     DetectionRequest,
 )
-from ai_models.base_pool.responses import (
+from .responses import (
     MediaResult,
     MultiMediaResult,
     ChatResult,
 )
-from ai_modules.providers.configs.dataclasses import ProviderConfig
-from ai_modules.image_generate.tools.client_image import LingyaImageClient
-from ai_modules.image_generate.tools.client_grsai import GrsaiImageClient
-from ai_modules.speech_generate.configs.dataclasses import SpeechAudioConfig, SpeechAppConfig
+from ...ai_modules.providers.configs.dataclasses import ProviderConfig
+from ...ai_modules.image_generate.tools.client_image import LingyaImageClient
+from ...ai_modules.image_generate.tools.client_grsai import GrsaiImageClient
+from ...ai_modules.speech_generate.configs.dataclasses import SpeechAudioConfig, SpeechAppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ _IMAGE_CLIENT_CLASSES: Dict[str, type] = {
 
 def _get_legacy_image_client():
     """获取旧图像客户端单例"""
-    from ai_config.ai_config import get_ai_config
+    from ...ai_config.ai_config import get_ai_config
 
     config = get_ai_config()
     image_cfg = config.image
@@ -83,8 +83,8 @@ def _get_legacy_image_client():
 
 def _get_legacy_video_client():
     """获取旧视频客户端单例"""
-    from ai_config.ai_config import get_ai_config
-    from ai_modules.video_generate.tools.client_video import DashScopeVideoClient
+    from ...ai_config.ai_config import get_ai_config
+    from ...ai_modules.video_generate.tools.client_video import DashScopeVideoClient
 
     config = get_ai_config()
     video_cfg = config.video
@@ -105,11 +105,11 @@ def _get_legacy_video_client():
 
 def _get_legacy_speech_client():
     """获取旧语音合成客户端单例"""
-    from ai_config.ai_config import (
+    from ...ai_config.ai_config import (
         get_ai_config,
         # SpeechAppConfig,
     )
-    from ai_modules.speech_generate.tools.client_speech import TTSClient
+    from ...ai_modules.speech_generate.tools.client_speech import TTSClient
 
     config = get_ai_config()
 
@@ -127,11 +127,11 @@ def _get_legacy_speech_client():
 
 def _get_legacy_music_client():
     """获取旧音乐生成客户端单例"""
-    from ai_config.ai_config import (
+    from ...ai_config.ai_config import (
         get_ai_config,
         # ProviderConfig,
     )
-    from ai_modules.music_generate.tools.client_music import SunoMusicClient
+    from ...ai_modules.music_generate.tools.client_music import SunoMusicClient
 
     config = get_ai_config()
 
@@ -156,8 +156,8 @@ def _get_legacy_chat_client():
 
     返回 LangChain BaseChatModel 实例，用于 Agent 和工具调用。
     """
-    from ai_config.ai_config import get_ai_config
-    from ai_modules.text_generate.tools.chat_loader import get_chat_model
+    from ...ai_config.ai_config import get_ai_config
+    from ...ai_modules.text_generate.tools.chat_loader import get_chat_model
 
     config = get_ai_config()
     chat_cfg = config.chat
@@ -185,7 +185,7 @@ def _get_legacy_omni_client():
 
     返回 (OpenAI 客户端, OmniModelConfig) 元组。
     """
-    from ai_config.ai_config import get_ai_config
+    from ...ai_config.ai_config import get_ai_config
     from openai import OpenAI
 
     config = get_ai_config()
@@ -217,7 +217,7 @@ def _get_legacy_detection_client():
 
     返回 (OpenAI 客户端, DetectionModelConfig) 元组。
     """
-    from ai_config.ai_config import get_ai_config
+    from ...ai_config.ai_config import get_ai_config
     from openai import OpenAI
 
     config = get_ai_config()
@@ -520,9 +520,9 @@ def create_legacy_omni_task(
     client, omni_config = client_tuple
 
     def task() -> MediaResult:
-        from ai_tools.response_adapter import FILEID_SCHEME
-        from ai_media_resource import get_media_registry
-        from ai_models.utils import file_url_to_data_uri
+        from ...ai_tools.response_adapter import FILEID_SCHEME
+        from ...ai_media_resource import get_media_registry
+        from ..utils import file_url_to_data_uri
 
         # 解析 URL 的辅助函数
         def resolve_url(url: str) -> str:
@@ -658,9 +658,9 @@ def create_legacy_detection_task(
     client, detection_config = client_tuple
 
     def task() -> MediaResult:
-        from ai_tools.response_adapter import FILEID_SCHEME
-        from ai_media_resource import get_media_registry
-        from ai_models.utils import file_url_to_data_uri
+        from ...ai_tools.response_adapter import FILEID_SCHEME
+        from ...ai_media_resource import get_media_registry
+        from ..utils import file_url_to_data_uri
 
         # 解析 URL
         image_url = request.image_url

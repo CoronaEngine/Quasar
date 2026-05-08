@@ -6,11 +6,11 @@ import logging
 
 from typing import Any, Dict
 
-from ai_config.ai_config import get_ai_config
-from ai_service.entrance import register_entrance
-from ai_tools.common import build_error_response, ensure_dict
-from ai_tools.concurrency import session_concurrency
-from ai_tools.helpers import request_time_diff
+from ...ai_config.ai_config import get_ai_config
+from ...ai_service.entrance import register_entrance
+from ...ai_tools.common import build_error_response, ensure_dict
+from ...ai_tools.concurrency import session_concurrency
+from ...ai_tools.helpers import request_time_diff
 
 from .stream_handler import handle_integrated_entrance_stream_inner
 

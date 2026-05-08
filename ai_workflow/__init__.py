@@ -25,13 +25,13 @@ Workflow 模块 - 基于 LangGraph 的预定义工作流编排
         ...
 """
 
-from ai_workflow.executor import run_workflow
-from ai_workflow.registry import (
+from .executor import run_workflow
+from .registry import (
     WorkflowRegistry,
     get_workflow_registry,
 )
-from ai_workflow.state import BaseWorkflowState, WorkflowState
-from ai_workflow.bridge import (
+from .state import BaseWorkflowState, WorkflowState
+from .bridge import (
     RequestContext,
     extract_text,
     parse_command,

@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, TYPE_CHECKING
 
-from ai_workflow.state import WorkflowState
+from .state import WorkflowState
 
 if TYPE_CHECKING:
     from langchain_core.tools import StructuredTool

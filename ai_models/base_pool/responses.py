@@ -76,7 +76,7 @@ def to_storage_result(result: MediaResult):
 
     对接现有存储适配器。
     """
-    from ai_media_resource.result import StorageResult
+    from ...ai_media_resource.result import StorageResult
 
     return StorageResult(url=result.url, url_expire_time=result.url_expire_time)
 
@@ -91,7 +91,7 @@ def build_result_part(
 
     构建响应 part 结构，对接 response_adapter.build_part。
     """
-    from ai_tools.response_adapter import build_part
+    from ...ai_tools.response_adapter import build_part
 
     parameter: Dict[str, Any] = {}
 

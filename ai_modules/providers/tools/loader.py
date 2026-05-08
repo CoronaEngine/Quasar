@@ -5,8 +5,8 @@ Provider 配置加载器
 import os
 from typing import Any, Dict, Mapping
 
-from ai_modules.providers.configs.dataclasses import ProviderConfig
-from ai_service.entrance import ai_entrance
+from ..configs.dataclasses import ProviderConfig
+from ....ai_service.entrance import ai_entrance
 
 
 @ai_entrance.collector.register_loader('providers')

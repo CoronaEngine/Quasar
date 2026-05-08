@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from ai_config.prompts import ToolPromptConfig
+from ....ai_config.prompts import ToolPromptConfig
 
 
 # ===========================================================================

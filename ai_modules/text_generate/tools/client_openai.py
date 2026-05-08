@@ -3,7 +3,7 @@ from __future__ import annotations
 from langchain_openai import ChatOpenAI
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from ai_modules.providers.configs.dataclasses import ProviderConfig
+from ...providers.configs.dataclasses import ProviderConfig
 
 
 # 自定义 User-Agent，避免 OpenAI SDK 默认的 "OpenAI/Python" User-Agent 被某些 API 代理商拦截

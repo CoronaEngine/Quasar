@@ -6,16 +6,16 @@ import uuid
 
 from typing import Any, Dict, Generator, Optional
 
-from ai_tools.common import extract_parameter
-from ai_workflow.bridge import (
+from ....ai_tools.common import extract_parameter
+from ....ai_workflow.bridge import (
     RequestContext,
     inject_function_id_and_prompt,
     normalize_int_function_id,
     parse_command,
     resolve_workflow_command,
 )
-from ai_workflow.executor import stream_workflow_from_request
-from ai_workflow.loop_state import (
+from ....ai_workflow.executor import stream_workflow_from_request
+from ....ai_workflow.loop_state import (
     clear_loop_state,
     get_loop_global_assets,
 )
@@ -33,8 +33,8 @@ STATE_REVIEW_COMMANDS = {"/state_review", "/state_edit", "/state_assets"}
 
 
 def _available_workflow_commands() -> Dict[str, int]:
-    from ai_workflow.command_registry import get_workflow_command_registry
-    from ai_workflow.registry import get_workflow_registry
+    from ....ai_workflow.command_registry import get_workflow_command_registry
+    from ....ai_workflow.registry import get_workflow_registry
 
     command_registry = get_workflow_command_registry()
     workflow_registry = get_workflow_registry()
@@ -314,7 +314,7 @@ def _loop_cmd_state_review(
         },
     }
 
-    from ai_tools.common import build_success_response
+    from ....ai_tools.common import build_success_response
 
     response = build_success_response(
         interface_type="integrated",

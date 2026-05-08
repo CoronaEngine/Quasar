@@ -4,9 +4,9 @@
 
 from typing import Any, Mapping
 
-from ai_modules.video_generate.configs.dataclasses import VideoToolConfig
-from ai_service.entrance import ai_entrance
-from ai_tools.helpers import _as_bool
+from ..configs.dataclasses import VideoToolConfig
+from ....ai_service.entrance import ai_entrance
+from ....ai_tools.helpers import _as_bool
 
 
 @ai_entrance.collector.register_loader("video")

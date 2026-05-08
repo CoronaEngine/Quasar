@@ -4,7 +4,7 @@
 提供会话进度追踪和账户使用记录功能。
 """
 
-from ai_tools.session_tracking.models import (
+from .models import (
     StepRetryInfo,
     StepInfo,
     SessionProgress,
@@ -12,7 +12,7 @@ from ai_tools.session_tracking.models import (
     DeadlineInfo,
     SessionCache,
 )
-from ai_tools.session_tracking.cache import (
+from .cache import (
     SessionCacheManager,
     get_session_cache_manager,
 )

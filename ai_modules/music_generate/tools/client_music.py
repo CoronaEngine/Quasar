@@ -9,8 +9,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from ai_modules.providers.configs.dataclasses import ProviderConfig
-from ai_models.utils import (
+from ...providers.configs.dataclasses import ProviderConfig
+from ....ai_models.utils import (
     BaseAPIClient,
     TaskPoller,
     retry_operation,

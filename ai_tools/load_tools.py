@@ -31,8 +31,8 @@ from typing import Callable, List
 
 from langchain_core.tools import BaseTool
 
-from ai_config.ai_config import AIConfig
-from ai_tools.registry import (
+from ..ai_config.ai_config import AIConfig
+from .registry import (
     ToolRegistry,
     ToolCategory,
     ToolDependency,
@@ -82,7 +82,7 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     # -----------------------------------------------------------------------
     # 测试工具（无依赖）
     # -----------------------------------------------------------------------
-    from ai_tools.test import load_test_tools
+    from .test import load_test_tools
 
     registry.register_loader(
         loader=load_test_tools,
@@ -95,7 +95,7 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     # -----------------------------------------------------------------------
     # 文案生成工具
     # -----------------------------------------------------------------------
-    from ai_modules.text_generate.tools.text_tools import load_text_tools
+    from ..ai_modules.text_generate.tools.text_tools import load_text_tools
 
     registry.register_loader(
         loader=load_text_tools,
@@ -117,7 +117,7 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     # -----------------------------------------------------------------------
     # 图像生成工具
     # -----------------------------------------------------------------------
-    from ai_modules.image_generate.tools.image_tools import load_image_tools
+    from ..ai_modules.image_generate.tools.image_tools import load_image_tools
 
     registry.register_loader(
         loader=load_image_tools,
@@ -135,7 +135,7 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     # -----------------------------------------------------------------------
     # 视频生成工具
     # -----------------------------------------------------------------------
-    from ai_modules.video_generate.tools.video_tools import load_video_tools
+    from ..ai_modules.video_generate.tools.video_tools import load_video_tools
 
     registry.register_loader(
         loader=load_video_tools,
@@ -153,7 +153,7 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     # -----------------------------------------------------------------------
     # 语音合成工具
     # -----------------------------------------------------------------------
-    from ai_modules.speech_generate.tools.speech_tools import load_speech_tools
+    from ..ai_modules.speech_generate.tools.speech_tools import load_speech_tools
 
     registry.register_loader(
         loader=load_speech_tools,
@@ -171,7 +171,7 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     # -----------------------------------------------------------------------
     # 音乐生成工具
     # -----------------------------------------------------------------------
-    from ai_modules.music_generate.tools.music_tools import load_music_tools
+    from ..ai_modules.music_generate.tools.music_tools import load_music_tools
 
     registry.register_loader(
         loader=load_music_tools,
@@ -189,7 +189,7 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     # -----------------------------------------------------------------------
     # 多模态理解工具
     # -----------------------------------------------------------------------
-    from ai_modules.omni.tools.omni_tools import load_omni_tools
+    from ..ai_modules.omni.tools.omni_tools import load_omni_tools
 
     registry.register_loader(
         loader=load_omni_tools,
@@ -206,7 +206,7 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
 # -----------------------------------------------------------------------
 # 3D 生成工具（Rodin）
 # -----------------------------------------------------------------------
-    from ai_modules.three_d_generate.tools.model_tools import load_3d_tools
+    from ..ai_modules.three_d_generate.tools.model_tools import load_3d_tools
 
     registry.register_loader(
         loader=load_3d_tools,
@@ -221,7 +221,7 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
 # -----------------------------------------------------------------------
 # 3D 生成工具（混元3D）
 # -----------------------------------------------------------------------
-    from ai_modules.three_d_generate.tools.model_tools import load_hunyuan3d_tools
+    from ..ai_modules.three_d_generate.tools.model_tools import load_hunyuan3d_tools
 
     registry.register_loader(
         loader=load_hunyuan3d_tools,
@@ -234,7 +234,7 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
 # -----------------------------------------------------------------------
 #  物体识别工具（Qwen3-VL-Embedding + sqlite-vec）
 # -----------------------------------------------------------------------
-    from ai_modules.object_recognition.base import load_recognition_tools
+    from ..ai_modules.object_recognition.base import load_recognition_tools
 
     registry.register_loader(
         loader=load_recognition_tools,
@@ -248,7 +248,7 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
 #  场景拆解工具（breakdown）
 # -----------------------------------------------------------------------
     try:
-        from ai_modules.scene_breakdown.tools.scene_breakdown_tools import load_scene_breakdown_tools
+        from ..ai_modules.scene_breakdown.tools.scene_breakdown_tools import load_scene_breakdown_tools
 
         registry.register_loader(
             loader=load_scene_breakdown_tools,
@@ -276,6 +276,14 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
             logger.exception("额外 builtin loader 注册函数执行失败: %s", exc)
 
 
+def ensure_builtin_loaders_registered(registry: ToolRegistry) -> None:
+    """Register CAI builtin loaders once for the given registry."""
+    if getattr(registry, "_cai_builtin_loaders_registered", False):
+        return
+    _register_builtin_loaders(registry)
+    setattr(registry, "_cai_builtin_loaders_registered", True)
+
+
 # ===========================================================================
 # 公开 API
 # ===========================================================================
@@ -299,8 +307,7 @@ def load_tools(config: AIConfig) -> List[BaseTool]:
     registry = get_tool_registry()
 
     # 注册内置加载器（仅首次调用时生效，后续调用自动跳过）
-    if not registry._loaders:
-        _register_builtin_loaders(registry)
+    ensure_builtin_loaders_registered(registry)
 
     # 执行发现（加载内置 + 外部工具）
     registry.discover(config)

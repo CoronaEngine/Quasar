@@ -7,11 +7,7 @@
     3. 端到端流程：远端入库 → 搜索
 
 运行方式:
-    cd <CAI 仓库根目录>
-    python -m ai_modules.object_recognition.test_recognition
-
-或直接运行:
-    python ai_modules/object_recognition/test_recognition.py
+    python -m plugins.AITool.CoronaArtificialIntelligence.ai_modules.object_recognition.test_recognition
 """
 
 from __future__ import annotations
@@ -21,16 +17,8 @@ import logging
 import os
 import sys
 import tempfile
-from pathlib import Path
 
 import numpy as np
-
-ai_root = Path(__file__).resolve().parents[2]
-if str(ai_root) not in sys.path:
-    sys.path.insert(0, str(ai_root))
-
-if __package__ in (None, ""):
-    __package__ = "ai_modules.object_recognition"
 
 logger = logging.getLogger(__name__)
 

@@ -19,9 +19,9 @@ from langchain_core.messages import BaseMessage, SystemMessage
 from langchain.agents import create_agent
 from langchain.agents.middleware import wrap_model_call
 
-from ai_config.ai_config import AIConfig, get_ai_config
-from ai_models.base_pool import get_chat_model, is_pool_mode
-from ai_tools.registry import get_tool_registry
+from ..ai_config.ai_config import AIConfig, get_ai_config
+from ..ai_models.base_pool import get_chat_model, is_pool_mode
+from ..ai_tools.registry import get_tool_registry
 
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ def _build_agent(config: AIConfig) -> Any:
 
     registry = get_tool_registry()
     if not registry.list_tools():
-        from ai_tools.load_tools import load_tools
+        from ..ai_tools.load_tools import load_tools
 
         load_tools(config)
 

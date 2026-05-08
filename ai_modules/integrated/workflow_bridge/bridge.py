@@ -4,7 +4,7 @@ import logging
 
 from typing import Any, Generator, Optional
 
-from ai_workflow.bridge import parse_request_context
+from ....ai_workflow.bridge import parse_request_context
 
 from .review import handle_review_submit
 from .router import (

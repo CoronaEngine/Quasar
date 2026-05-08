@@ -62,7 +62,7 @@ class Rodin3DClient:
         # -------------------------------------------------
         if image_ref.startswith("fileid://"):
             try:
-                from ai_tools.response_adapter import resolve_parts
+                from ....ai_tools.response_adapter import resolve_parts
 
                 resolved = resolve_parts(
                     [{"content_type": "file", "content_text": image_ref}],

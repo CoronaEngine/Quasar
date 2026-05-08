@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Dict
 
-from ai_workflow.state import deep_merge_dict
+from .state import deep_merge_dict
 
 _session_assets: Dict[str, Dict[str, Any]] = {}
 _lock = threading.RLock()

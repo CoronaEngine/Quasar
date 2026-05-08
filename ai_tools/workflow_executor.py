@@ -12,19 +12,19 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from ai_tools.common import build_error_response
-from ai_tools.session_tracking import (
+from .common import build_error_response
+from .session_tracking import (
     init_session,
     update_session_state,
     set_session_error,
 )
-from ai_workflow.adapter import (
+from ..ai_workflow.adapter import (
     extract_function_id,
     parse_request,
     format_response,
 )
-from ai_workflow.registry import get_workflow_registry
-from ai_tools.context import (
+from ..ai_workflow.registry import get_workflow_registry
+from .context import (
     set_current_session,
     reset_current_session,
 )

@@ -14,7 +14,7 @@ from typing import Any, Dict
 # ===========================================================================
 
 
-from ai_service.entrance import ai_entrance
+from ....ai_service.entrance import ai_entrance
 
 @ai_entrance.collector.register_setting("music")
 def MUSIC_SETTINGS() -> Dict[str, Any]:

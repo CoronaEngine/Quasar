@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from ai_config.ai_config import AIConfig
-from ai_modules.providers.configs.dataclasses import ProviderConfig
-from ai_modules.text_generate.tools.client_openai import build_openai_chat
+from ....ai_config.ai_config import AIConfig
+from ...providers.configs.dataclasses import ProviderConfig
+from .client_openai import build_openai_chat
 
 
 def get_chat_model(

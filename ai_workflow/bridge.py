@@ -10,7 +10,7 @@
 - 请求上下文构建
 
 使用方式：
-    from ai_workflow.bridge import resolve_workflow_command, parse_request_context
+    from .bridge import resolve_workflow_command, parse_request_context
 
     # 解析命令
     ctx = parse_request_context(request_data)
@@ -31,9 +31,9 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
-from ai_tools.common import ensure_dict, extract_parameter
-from ai_workflow.command_registry import get_workflow_command_registry
-from ai_workflow.registry import get_workflow_registry
+from ..ai_tools.common import ensure_dict, extract_parameter
+from .command_registry import get_workflow_command_registry
+from .registry import get_workflow_registry
 
 logger = logging.getLogger(__name__)
 

@@ -9,18 +9,18 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-from ai_config.ai_config import get_ai_config
-from ai_tools.common import (
+from ...ai_config.ai_config import get_ai_config
+from ...ai_tools.common import (
     ensure_dict,
     build_error_response,
     build_success_response,
     parse_tool_response,
 )
-from ai_tools.concurrency import session_concurrency
-from ai_service.entrance import register_entrance
-from ai_tools.helpers import request_time_diff
-from ai_tools.request_parser import extract_images_from_request
-from ai_tools.session_tracking import (
+from ...ai_tools.concurrency import session_concurrency
+from ...ai_service.entrance import register_entrance
+from ...ai_tools.helpers import request_time_diff
+from ...ai_tools.request_parser import extract_images_from_request
+from ...ai_tools.session_tracking import (
     init_session,
     update_session_state,
     set_session_error,

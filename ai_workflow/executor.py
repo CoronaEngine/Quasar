@@ -23,21 +23,21 @@ import queue
 import threading
 from typing import Any, Generator, Optional
 
-from ai_workflow.adapter import (
+from .adapter import (
     parse_request,
     format_response,
 )
-from ai_workflow.loop_state import update_loop_global_assets
-from ai_workflow.progress import (
+from .loop_state import update_loop_global_assets
+from .progress import (
     publish_node_entries_event,
     publish_stream_event,
     register_stream_event_queue,
     unregister_stream_event_queue,
 )
-from ai_workflow.registry import get_workflow_registry
-from ai_workflow.state import WorkflowState, deep_merge_dict
-from ai_tools.common import build_error_response, build_success_response
-from ai_tools.context import (
+from .registry import get_workflow_registry
+from .state import WorkflowState, deep_merge_dict
+from ..ai_tools.common import build_error_response, build_success_response
+from ..ai_tools.context import (
     set_current_session,
     reset_current_session,
 )
@@ -487,7 +487,7 @@ def stream_workflow_from_request(
     返回生成器（命中工作流时）或 None（未命中时）。
     对于注册了 checkpoint_nodes 的工作流会分步输出。
     """
-    from ai_tools.common import (
+    from ..ai_tools.common import (
         ensure_dict,
         extract_parameter,
     )
@@ -546,7 +546,7 @@ def run_workflow_from_request(
     Returns:
         成功时返回响应 JSON，未找到 function_id 或未注册时返回 None
     """
-    from ai_tools.common import (
+    from ..ai_tools.common import (
         ensure_dict,
         extract_parameter,
     )

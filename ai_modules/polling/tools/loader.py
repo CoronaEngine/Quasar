@@ -3,8 +3,8 @@
 """
 
 from typing import Any, Mapping
-from ai_modules.polling.configs.dataclasses import PollingConfig
-from ai_service.entrance import ai_entrance
+from ..configs.dataclasses import PollingConfig
+from ....ai_service.entrance import ai_entrance
 
 
 @ai_entrance.collector.register_loader('polling')

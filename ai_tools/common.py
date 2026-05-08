@@ -6,8 +6,8 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterable, List, Optional
 from collections.abc import Mapping
 
-from ai_agent.conversation import default_session_id
-from ai_tools.context import (
+from ..ai_agent.conversation import default_session_id
+from .context import (
     reset_current_session,
     set_current_session,
 )
@@ -89,7 +89,7 @@ def has_session_cache(session_id: str) -> bool:
         >>> if has_session_cache("user-123"):
         >>>     print("会话存在，可以加载历史上下文")
     """
-    from ai_agent.conversation_store import (
+    from ..ai_agent.conversation_store import (
         get_conversation_store,
     )
 
@@ -113,7 +113,7 @@ def get_session_cache_info(session_id: str) -> Dict[str, Any]:
         >>> if info["has_messages"]:
         >>>     print(f"会话有 {info['message_count']} 条消息")
     """
-    from ai_agent.conversation_store import (
+    from ..ai_agent.conversation_store import (
         get_conversation_store,
     )
 
@@ -213,7 +213,7 @@ def build_success_response(
             parts = []
 
         # 自动解析 parts 中的 fileid:// URL（独立接口需要返回真实 URL 给用户）
-        from ai_tools.response_adapter import resolve_parts
+        from .response_adapter import resolve_parts
 
         try:
             parts = resolve_parts(parts, timeout=150.0)

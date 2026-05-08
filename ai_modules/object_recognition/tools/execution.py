@@ -14,8 +14,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from ai_config.ai_config import AIConfig
-from ai_tools.response_adapter import (
+from ....ai_config.ai_config import AIConfig
+from ....ai_tools.response_adapter import (
     build_part,
 )
 from ..configs.dataclasses import (

@@ -26,17 +26,10 @@ from __future__ import annotations
 
 import importlib
 import logging
-import os
 import pkgutil
-import sys
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Optional
-
-# 确保 ai_workflow 模块在 Python 路径中
-_current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _current_dir not in sys.path:
-    sys.path.insert(0, _current_dir)
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
@@ -156,15 +149,13 @@ class WorkflowRegistry:
             return 0
 
         # 扫描 flows 目录下的模块
-        package_name = "ai_workflow.flows"
-
         for module_info in pkgutil.iter_modules([str(flows_path)]):
             if module_info.name.startswith("_"):
                 continue
 
-            module_name = f"{package_name}.{module_info.name}"
+            module_name = f".flows.{module_info.name}"
             try:
-                module = importlib.import_module(module_name)
+                module = importlib.import_module(module_name, __package__)
 
                 # 查找 WORKFLOWS 变量
                 workflows = getattr(module, "WORKFLOWS", None)
@@ -193,7 +184,7 @@ class WorkflowRegistry:
                         logger.debug(f"Skip duplicate: {e}")
 
             except Exception as e:
-                logger.error(f"Failed to load workflow module {module_name}: {e}")
+                logger.error(f"Failed to load workflow module {__package__}{module_name}: {e}")
 
         if count > 0:
             logger.debug(f"Discovered {count} builtin workflow(s) from flows/")

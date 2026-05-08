@@ -6,8 +6,8 @@ import time
 
 from typing import Any, Callable, Dict, List, Optional
 
-from ai_workflow.progress import publish_node_boundary_event
-from ai_workflow.state import WorkflowState
+from .progress import publish_node_boundary_event
+from .state import WorkflowState
 
 FormatterFunc = Callable[[Dict[str, Any], WorkflowState], List[Dict[str, Any]]]
 NodeFunc = Callable[[WorkflowState], Dict[str, Any]]
