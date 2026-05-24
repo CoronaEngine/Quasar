@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from CoronaArtificialIntelligence.cai import CAIApp, ChatRequest, StreamEvent
+from Quasar.cai import CAIApp, ChatRequest, StreamEvent
 
 
 def main() -> None:

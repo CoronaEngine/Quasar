@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from CoronaArtificialIntelligence.cai import CAIApp, ChatRequest, StreamEvent
+from Quasar.cai import CAIApp, ChatRequest, StreamEvent
 
 
 app = FastAPI()

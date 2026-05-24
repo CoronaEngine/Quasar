@@ -1,10 +1,10 @@
-# CoronaArtificialIntelligence
+# Quasar
 
-CoronaArtificialIntelligence, or CAI, is the AI runtime used by CabbageEditor. It now exposes a small public facade for host integration while keeping the legacy module loading system compatible.
+Quasar, or CAI, is the AI runtime used by CabbageEditor. It now exposes a small public facade for host integration while keeping the legacy module loading system compatible.
 
 The physical directory remains under CabbageEditor as a submodule. Standalone usage is supported through editable install or by importing the package from its parent directory.
 
-CabbageEditor-side adapter code imports CAI with the same package name used by external hosts, for example `from CoronaArtificialIntelligence.cai import CAIApp`. CAI package internals still use package-relative imports to keep internal modules movable within the package.
+CabbageEditor-side adapter code imports CAI with the same package name used by external hosts, for example `from Quasar.cai import CAIApp`. CAI package internals still use package-relative imports to keep internal modules movable within the package.
 
 ## Install For Development
 
@@ -27,7 +27,7 @@ python -m pip install -e ".[object-recognition]"
 ## Public Facade
 
 ```python
-from CoronaArtificialIntelligence.cai import CAIApp, ChatRequest, StreamEvent
+from Quasar.cai import CAIApp, ChatRequest, StreamEvent
 
 app = CAIApp()
 request = ChatRequest.from_text("请总结这段文字", session_id="demo")
@@ -43,7 +43,7 @@ The facade currently wraps the legacy integrated stream handler. New host code s
 
 - `examples/cli_chat.py`: minimal CLI-style script.
 - `examples/fastapi_websocket.py`: FastAPI WebSocket integration sketch.
-- `cai-chat`: console script installed by `pyproject.toml`.
+- `quasar-chat`: console script installed by `pyproject.toml`.
 
 ## Architecture Notes
 

@@ -1,11 +1,11 @@
 # CAI API Reference
 
-This reference describes the public facade added for standalone and host-embedded use. The legacy `ai_service.entrance` module remains available for compatibility, but new host integrations should prefer `CoronaArtificialIntelligence.cai`.
+This reference describes the public facade added for standalone and host-embedded use. The legacy `ai_service.entrance` module remains available for compatibility, but new host integrations should prefer `Quasar.cai`.
 
 ## Import
 
 ```python
-from CoronaArtificialIntelligence.cai import CAIApp, CAIRuntime, ChatRequest, StreamEvent
+from Quasar.cai import CAIApp, CAIRuntime, ChatRequest, StreamEvent
 ```
 
 When CAI is used inside CabbageEditor, AITool imports the same facade through the editor package path and installs `cai_extensions` into the current `CAIApp`.
@@ -98,5 +98,5 @@ python -m pip install -e .
 Then import with:
 
 ```python
-from CoronaArtificialIntelligence.cai import CAIApp
+from Quasar.cai import CAIApp
 ```
