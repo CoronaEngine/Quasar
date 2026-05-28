@@ -639,12 +639,14 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
     if not api_key:
         raise RuntimeError("混元3D api_key 缺失：请在 settings.hunyuan3d.api_key 配置")
 
+    max_concurrent = getattr(hunyuan_config, 'max_concurrent_generations', 3) or 3
     client = Hunyuan3DClient(
         api_key=api_key,
         region=hunyuan_config.region,
         endpoint=hunyuan_config.endpoint,
         timeout=float(hunyuan_config.request_timeout),
         version=hunyuan_config.version,
+        max_concurrent=max_concurrent,
     )
 
     poll_interval = hunyuan_config.poll_interval
