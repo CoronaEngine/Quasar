@@ -636,17 +636,46 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
         return []
 
     api_key = (hunyuan_config.api_key or "").strip()
-    if not api_key:
-        raise RuntimeError("混元3D api_key 缺失：请在 settings.hunyuan3d.api_key 配置")
 
-    max_concurrent = getattr(hunyuan_config, 'max_concurrent_generations', 3) or 3
-    client = Hunyuan3DClient(
-        api_key=api_key,
-        region=hunyuan_config.region,
-        endpoint=hunyuan_config.endpoint,
-        timeout=float(hunyuan_config.request_timeout),
-        version=hunyuan_config.version,
-        max_concurrent=max_concurrent,
+    # 收集所有可用 AK: api_keys 列表优先, 单 api_key 兜底
+    all_keys: List[str] = []
+    api_keys_cfg = getattr(hunyuan_config, 'api_keys', None)
+    if api_keys_cfg and isinstance(api_keys_cfg, list):
+        all_keys.extend(str(k).strip() for k in api_keys_cfg if str(k).strip())
+    if api_key and api_key not in all_keys:
+        all_keys.append(api_key)
+    if not all_keys:
+        raise RuntimeError(
+            "混元3D api_key 缺失：请在 settings.hunyuan3d.api_key 或 api_keys 中配置"
+        )
+
+    per_key_concurrent = getattr(hunyuan_config, 'max_concurrent_generations', 3) or 3
+
+    # 创建 client 池: 每个 AK 一个 client, round-robin 分配
+    _clients = [
+        Hunyuan3DClient(
+            api_key=k,
+            region=hunyuan_config.region,
+            endpoint=hunyuan_config.endpoint,
+            timeout=float(hunyuan_config.request_timeout),
+            version=hunyuan_config.version,
+            max_concurrent=per_key_concurrent,
+        )
+        for k in all_keys
+    ]
+    _client_lock = threading.Lock()
+    _client_cursor = [0]
+
+    def _acquire_client() -> Hunyuan3DClient:
+        """Round-robin 从池中取一个 client, 线程安全"""
+        with _client_lock:
+            idx = _client_cursor[0]
+            _client_cursor[0] = (idx + 1) % len(_clients)
+        return _clients[idx]
+
+    logger.info(
+        "混元3D client 池就绪: %d keys × %d concurrent = %d 最大并行",
+        len(_clients), per_key_concurrent, len(_clients) * per_key_concurrent,
     )
 
     poll_interval = hunyuan_config.poll_interval
@@ -878,7 +907,7 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
             actual_model = model_version or default_model
             actual_face_count = face_count if face_count is not None else default_face_count
 
-            result = client.run_to_download_urls(
+            result = _acquire_client().run_to_download_urls(
                 images=image_list if mode == "image_to_3d" else None,
                 prompt=prompt if mode == "text_to_3d" else None,
                 result_format=actual_format,

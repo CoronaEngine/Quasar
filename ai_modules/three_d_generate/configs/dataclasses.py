@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List
 
 
 @dataclass(frozen=False)
@@ -34,6 +35,12 @@ class Hunyuan3DSettings:
 
     # API 密钥（Bearer Token）
     api_key: str = ""
+
+    # 多 AK 并行: 每个 key 独立建 client, 提高并发上限
+    api_keys: List[str] = field(default_factory=list)
+
+    # 单 AK 最大并发任务数 (混元限制 3)
+    max_concurrent_generations: int = 3
 
     # 服务地域
     region: str = "ap-guangzhou"
