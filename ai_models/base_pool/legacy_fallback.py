@@ -33,7 +33,8 @@ from .responses import (
 )
 from ...ai_modules.providers.configs.dataclasses import ProviderConfig
 from ...ai_modules.image_generate.tools.client_image import LingyaImageClient
-from ...ai_modules.image_generate.tools.client_grsai import GrsaiImageClient
+# from ...ai_modules.image_generate.tools.client_grsai import GrsaiImageClient  # grsai 已弃用
+from ...ai_modules.image_generate.tools.client_dmx import DmxImageClient
 from ...ai_modules.speech_generate.configs.dataclasses import SpeechAudioConfig, SpeechAppConfig
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,8 @@ _legacy_clients_lock = threading.Lock()
 
 _IMAGE_CLIENT_CLASSES: Dict[str, type] = {
     # provider 名称与 image.provider 对齐
-    "grsai_image": GrsaiImageClient,
+    # "grsai_image": GrsaiImageClient,  # grsai 已弃用，改用 dmx
+    "dmx_image": DmxImageClient,
     "lingya_image": LingyaImageClient,
 }
 
