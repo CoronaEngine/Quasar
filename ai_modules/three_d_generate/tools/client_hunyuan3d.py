@@ -33,13 +33,14 @@ class Hunyuan3DClient:
         endpoint: str = "tokenhub.tencentmaas.com",
         timeout: float = 120.0,
         version: str = "pro",
+        max_concurrent: int = 3,
     ):
         self.api_key = api_key
         self.region = region
         self.endpoint = endpoint.rstrip("/")
         self.timeout = timeout
         self.version = version
-        self._generation_lock = threading.Lock()
+        self._generation_semaphore = threading.BoundedSemaphore(max_concurrent)
 
         logger.info(
             "Initialized Hunyuan3DClient endpoint=%s version=%s api_key=%s",
@@ -180,14 +181,14 @@ class Hunyuan3DClient:
     # 模型名映射
     # ------------------------------------------------------------------
     def _get_model_name(self, model: str = "") -> str:
-        """根据版本和 model 参数返回 TokenHub 的 model 名称"""
+        """根据版本和 model 参数返回 model 名称"""
         # 专业版
         if self.version == "pro":
             if model == "3.1":
-                return "hy-3d-3.1"
-            return "hy-3d-3.0"
+                return "3.1"
+            return "3.0"
         # 极速版
-        return "hy-3d-rapid"
+        return "rapid"
 
     # ------------------------------------------------------------------
     # 提交任务
@@ -221,14 +222,16 @@ class Hunyuan3DClient:
 
         if result_format:
             body["ResultFormat"] = result_format
-        if enable_pbr:
-            body["EnablePBR"] = True
+        # NOTE: 新 API (api.ai3d.cloud.tencent.com) 不再接受 EnablePBR，
+        # PBR 贴图由 result_format 控制（GLB 默认包含 PBR 材质）
+        # if enable_pbr:
+        #     body["EnablePBR"] = True
         if face_count is not None:
             body["FaceCount"] = face_count
         if generate_type and generate_type != "Normal":
             body["GenerateType"] = generate_type
 
-        resp = self._post("/v1/api/3d/submit", body)
+        resp = self._post("/v1/ai3d/submit", body)
 
         # 提取 job id（兼容多种字段名）
         job_id = (
@@ -248,11 +251,8 @@ class Hunyuan3DClient:
     # 查询任务
     # ------------------------------------------------------------------
     def query_job(self, job_id: str, model: str = "3.0") -> Dict[str, Any]:
-        body = {
-            "model": self._get_model_name(model),
-            "id": job_id,
-        }
-        return self._post("/v1/api/3d/query", body)
+        body = {"JobId": job_id}
+        return self._post("/v1/ai3d/query", body)
 
     # ------------------------------------------------------------------
     # 提交 + 轮询 + 返回下载列表（统一接口）
@@ -275,7 +275,7 @@ class Hunyuan3DClient:
         返回格式与 Rodin3DClient 保持一致：
         {"task_uuid": ..., "downloads": [{"name": ..., "url": ...}, ...]}
         """
-        with self._generation_lock:
+        with self._generation_semaphore:
             job_id = self.submit_job(
                 images=images, prompt=prompt,
                 result_format=result_format, enable_pbr=enable_pbr,

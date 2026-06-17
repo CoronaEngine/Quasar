@@ -116,20 +116,38 @@ def load_image_tools(config: AIConfig) -> List[StructuredTool]:
             # 执行池任务获取 MediaResult
             result: MediaResult = pool_task()
 
-            # 检查 URL 是否有效
-            if not result.url or not result.url.startswith(("http://", "https://")):
-                raise RuntimeError(f"图像生成失败: {result.metadata.get('error', '无效的 URL')}")
-
             # 计算过期时间（图像 2 小时）
             url_expire_time = result.url_expire_time or calculate_expire_time("image")
 
-            # 通过存储适配器保存（本地模式下载，云端模式直接返回）
-            return storage_adapter.save_from_url(
-                cloud_url=result.url,
-                session_id=session_id,
-                resource_type="image",
-                url_expire_time=url_expire_time,
-            )
+            generated_url = (result.url or "").strip()
+            if generated_url.startswith(("http://", "https://")):
+                # 通过存储适配器保存（本地模式下载，云端模式直接返回）
+                return storage_adapter.save_from_url(
+                    cloud_url=generated_url,
+                    session_id=session_id,
+                    resource_type="image",
+                    url_expire_time=url_expire_time,
+                )
+
+            if generated_url.startswith("data:"):
+                return storage_adapter.save_from_base64(
+                    data_uri=generated_url,
+                    session_id=session_id,
+                    resource_type="image",
+                    filename_prefix="generated_image",
+                    url_expire_time=url_expire_time,
+                )
+
+            if result.metadata.get("payload_type") == "base64":
+                return storage_adapter.save_from_base64(
+                    data_uri=generated_url,
+                    session_id=session_id,
+                    resource_type="image",
+                    filename_prefix="generated_image",
+                    url_expire_time=url_expire_time,
+                )
+
+            raise RuntimeError(f"图像生成失败: {result.metadata.get('error', '无效的 URL')}")
 
         try:
             # 提交任务到注册表，立即返回 file_id

@@ -45,10 +45,20 @@ def _load_hunyuan_3d_config(raw: Mapping[str, Any] | None) -> Hunyuan3DSettings:
     if not isinstance(raw, Mapping):
         return Hunyuan3DSettings()
 
+    # 支持多 AK: api_keys 列表优先, 单 api_key 兜底
+    api_keys_raw = raw.get("api_keys", [])
+    if isinstance(api_keys_raw, list) and api_keys_raw:
+        api_keys = [str(k).strip() for k in api_keys_raw if str(k).strip()]
+    else:
+        api_keys = []
+    single_key = raw.get("api_key", "") or ""
+
     return Hunyuan3DSettings(
         enable=_as_bool(raw.get("enable"), False),
         provider=raw.get("provider", ""),
-        api_key=raw.get("api_key", ""),
+        api_key=single_key,
+        api_keys=api_keys,
+        max_concurrent_generations=int(raw.get("max_concurrent_generations", 3) or 3),
         region=raw.get("region", "ap-guangzhou"),
         endpoint=raw.get("endpoint", "tokenhub.tencentmaas.com"),
         version=raw.get("version", "pro"),
