@@ -16,9 +16,9 @@ from ....ai_service.entrance import ai_entrance
 def IMAGE_SETTINGS() -> Dict[str, Any]:
     return {
         "enable": True,
-        "provider": "example",
-        "model": "image-model",
-        "base_url": "https://api.example.com/v1/images/generations",
+        "provider": "dmx_image",
+        "model": "gpt-image-2-ssvip",
+        "base_url": "https://www.dmxapi.cn/v1/images/generations",
     }
 
 
