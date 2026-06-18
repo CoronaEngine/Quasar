@@ -77,7 +77,9 @@ from .task_executor import (
 from .registry import (
     MediaResourceRegistry,
     get_media_registry,
+    get_media_task_scheduler,
     reset_media_registry,
+    set_media_task_scheduler,
 )
 
 
@@ -111,5 +113,7 @@ __all__ = [
     # 媒体注册表
     "MediaResourceRegistry",
     "get_media_registry",
+    "get_media_task_scheduler",
     "reset_media_registry",
+    "set_media_task_scheduler",
 ]

@@ -33,6 +33,88 @@ from .task_executor import (
 
 logger = logging.getLogger(__name__)
 
+_MEDIA_TASK_SCHEDULER: Any = None
+_MEDIA_TASK_JOBS: Dict[str, str] = {}
+_MEDIA_TASK_LOCK = threading.Lock()
+
+
+def set_media_task_scheduler(scheduler: Any) -> None:
+    """Install an optional GenerationScheduler for media generation tasks."""
+    global _MEDIA_TASK_SCHEDULER
+    with _MEDIA_TASK_LOCK:
+        _MEDIA_TASK_SCHEDULER = scheduler
+        if scheduler is None:
+            _MEDIA_TASK_JOBS.clear()
+
+
+def get_media_task_scheduler() -> Any:
+    with _MEDIA_TASK_LOCK:
+        return _MEDIA_TASK_SCHEDULER
+
+
+def _remember_media_task_job(file_id: str, job_id: str) -> None:
+    with _MEDIA_TASK_LOCK:
+        _MEDIA_TASK_JOBS[file_id] = job_id
+
+
+def _forget_media_task_job(file_id: str) -> None:
+    with _MEDIA_TASK_LOCK:
+        _MEDIA_TASK_JOBS.pop(file_id, None)
+
+
+def _get_media_task_job(file_id: str) -> tuple[Any, str]:
+    with _MEDIA_TASK_LOCK:
+        return _MEDIA_TASK_SCHEDULER, _MEDIA_TASK_JOBS.get(file_id, "")
+
+
+def _submit_media_task_job(
+    *,
+    scheduler: Any,
+    file_id: str,
+    task_fn: Callable[[], Union[str, StorageResult]],
+    resource_type: str,
+    session_id: str,
+) -> bool:
+    submit = getattr(scheduler, "submit", None)
+    if not callable(submit):
+        return False
+
+    def _run_media_task(job: Any) -> Dict[str, Any]:
+        result = task_fn()
+        url = getattr(result, "url", result)
+        expire_time = getattr(result, "url_expire_time", None)
+        return {
+            "media_file_id": file_id,
+            "resource_type": resource_type,
+            "content_url": url,
+            "url_expire_time": expire_time,
+        }
+
+    payload = {
+        "job_id": f"media-{file_id}",
+        "job_type": "media_resource_task",
+        "session_id": session_id,
+        "batch_id": file_id,
+        "resource_type": resource_type,
+        "_runtime_context": {
+            "stage_order": ("submit",),
+            "stage_handlers": {"submit": _run_media_task},
+        },
+    }
+    submitted = submit(payload)
+    job_id = ""
+    if isinstance(submitted, dict):
+        job_id = str(submitted.get("job_id") or "")
+        if submitted.get("status") == "waiting_user" and submitted.get("error"):
+            logger.warning("[%s] media scheduler rejected task: %s", file_id, submitted.get("error"))
+            return False
+    else:
+        job_id = str(getattr(submitted, "job_id", "") or "")
+    if not job_id:
+        return False
+    _remember_media_task_job(file_id, job_id)
+    return True
+
 
 class MediaResourceRegistry:
     """
@@ -156,7 +238,6 @@ class MediaResourceRegistry:
         - file_id: 12 位十六进制字符串
         """
         file_id = self._generate_file_id()
-        executor = get_task_executor()
 
         def wrapped_task():
             result = task_fn()
@@ -178,13 +259,6 @@ class MediaResourceRegistry:
                     self._records[file_id].url_expire_time = url_expire_time
             return result
 
-        # 提交到任务执行器
-        executor.submit(
-            task_id=file_id,
-            task_fn=wrapped_task,
-            metadata={"resource_type": resource_type, "session_id": session_id},
-        )
-
         # 创建记录
         record = MediaRecord(
             file_id=file_id,
@@ -201,6 +275,37 @@ class MediaResourceRegistry:
             self._cleanup_if_needed()
             self._records[file_id] = record
             self._add_to_session(session_id, file_id)
+
+        scheduler = get_media_task_scheduler()
+        scheduled = False
+        scheduler_error = ""
+        if scheduler is not None:
+            try:
+                scheduled = _submit_media_task_job(
+                    scheduler=scheduler,
+                    file_id=file_id,
+                    task_fn=wrapped_task,
+                    resource_type=resource_type,
+                    session_id=session_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                scheduler_error = str(exc)
+                logger.warning("[%s] media scheduler submit failed: %s", file_id, exc)
+
+        if scheduler is not None and not scheduled:
+            if not scheduler_error:
+                scheduler_error = "media scheduler rejected task"
+            with self._records_lock:
+                if file_id in self._records:
+                    self._records[file_id].error = scheduler_error
+            logger.warning("[%s] media task not started because scheduler rejected it: %s", file_id, scheduler_error)
+        elif not scheduled:
+            executor = get_task_executor()
+            executor.submit(
+                task_id=file_id,
+                task_fn=wrapped_task,
+                metadata={"resource_type": resource_type, "session_id": session_id},
+            )
 
         logger.debug(f"[{file_id}] 任务已提交: {resource_type}, session={session_id}")
         return file_id
@@ -333,9 +438,53 @@ class MediaResourceRegistry:
                         raise RuntimeError(f"缓存已过期: {url}")
                     return resolved_url
                 return url
+            if record.error:
+                raise RuntimeError(f"任务 {file_id} 失败: {record.error}")
 
         # 有关联的异步任务，等待完成
         if record.task_id:
+            scheduler, scheduler_job_id = _get_media_task_job(record.task_id)
+            if scheduler is not None and scheduler_job_id:
+                try:
+                    wait = getattr(scheduler, "wait", None)
+                    status_fn = getattr(scheduler, "status", None)
+                    status = (
+                        wait(scheduler_job_id, timeout=timeout or 300.0)
+                        if callable(wait)
+                        else status_fn(scheduler_job_id)
+                        if callable(status_fn)
+                        else {}
+                    )
+                    if isinstance(status, dict):
+                        state = str(status.get("status") or "")
+                        if state == "done":
+                            with self._records_lock:
+                                current = self._records.get(file_id)
+                                url = current.content_url if current else ""
+                            if not url:
+                                result = status.get("result") or {}
+                                url = str(result.get("content_url") or "")
+                            if url.startswith("cache://"):
+                                resolved_url = resolve_cache_url(url, return_original_url=return_original_url)
+                                if resolved_url is None:
+                                    raise RuntimeError(f"缓存已过期: {url}")
+                                return resolved_url
+                            if url:
+                                return url
+                            raise RuntimeError(f"任务 {scheduler_job_id} 已完成但未返回 URL")
+                        if state in {"failed", "cancelled", "abandoned"}:
+                            error = str(status.get("error") or state)
+                            with self._records_lock:
+                                if file_id in self._records:
+                                    self._records[file_id].error = error
+                            raise RuntimeError(f"任务 {scheduler_job_id} 失败: {error}")
+                    raise TimeoutError(f"任务 {scheduler_job_id} 未在限定时间内完成")
+                except Exception as e:
+                    with self._records_lock:
+                        if file_id in self._records:
+                            self._records[file_id].error = str(e)
+                    raise
+
             executor = get_task_executor()
             try:
                 # timeout 为 None 时，由 executor.wait() 根据任务类型智能推断
@@ -415,6 +564,17 @@ class MediaResourceRegistry:
                 return TaskStatus.ERROR
             # 有任务 ID，查询任务状态
             if record.task_id:
+                scheduler, scheduler_job_id = _get_media_task_job(record.task_id)
+                if scheduler is not None and scheduler_job_id:
+                    status_fn = getattr(scheduler, "status", None)
+                    if callable(status_fn):
+                        status = status_fn(scheduler_job_id)
+                        state = str(status.get("status") or "") if isinstance(status, dict) else ""
+                        if state == "done":
+                            return TaskStatus.DONE
+                        if state in {"failed", "cancelled", "abandoned", "not_found"}:
+                            return TaskStatus.ERROR
+                        return TaskStatus.PENDING
                 executor = get_task_executor()
                 return executor.get_status(record.task_id)
 
@@ -483,6 +643,7 @@ class MediaResourceRegistry:
                     session_file_ids.remove(file_id)
                 # 清理关联的任务
                 if record.task_id:
+                    _forget_media_task_job(record.task_id)
                     executor = get_task_executor()
                     executor.cleanup(record.task_id)
 
@@ -499,6 +660,7 @@ class MediaResourceRegistry:
                 if record is not None:
                     count += 1
                     if record.task_id:
+                        _forget_media_task_job(record.task_id)
                         executor.cleanup(record.task_id)
 
             return count
@@ -525,9 +687,30 @@ class MediaResourceRegistry:
                 elif record.error:
                     error += 1
                 elif record.task_id:
-                    executor = get_task_executor()
                     try:
-                        status = executor.get_status(record.task_id)
+                        scheduler, scheduler_job_id = _get_media_task_job(record.task_id)
+                        if scheduler is not None and scheduler_job_id:
+                            status_fn = getattr(scheduler, "status", None)
+                            scheduler_status = (
+                                status_fn(scheduler_job_id)
+                                if callable(status_fn)
+                                else {"status": "pending"}
+                            )
+                            state = (
+                                str(scheduler_status.get("status") or "")
+                                if isinstance(scheduler_status, dict)
+                                else ""
+                            )
+                            status = (
+                                TaskStatus.DONE
+                                if state == "done"
+                                else TaskStatus.ERROR
+                                if state in {"failed", "cancelled", "abandoned", "not_found"}
+                                else TaskStatus.PENDING
+                            )
+                        else:
+                            executor = get_task_executor()
+                            status = executor.get_status(record.task_id)
                         if status == TaskStatus.PENDING:
                             pending += 1
                         elif status == TaskStatus.DONE:
@@ -580,5 +763,7 @@ def reset_media_registry() -> None:
 __all__ = [
     "MediaResourceRegistry",
     "get_media_registry",
+    "get_media_task_scheduler",
     "reset_media_registry",
+    "set_media_task_scheduler",
 ]
