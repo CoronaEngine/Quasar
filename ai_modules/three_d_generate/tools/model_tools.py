@@ -37,6 +37,22 @@ logger = logging.getLogger(__name__)
 
 _MESH_READY_EVENTS: Dict[str, threading.Event] = {}
 _MESH_EVENTS_LOCK = threading.Lock()
+_DEFERRED_DOWNLOAD_SCHEDULER: Any = None
+
+
+def set_deferred_download_scheduler(scheduler: Any) -> None:
+    """Inject an optional GenerationScheduler for mesh/rest downloads.
+
+    Default remains the legacy background thread path. Tests and the LANChat
+    generation control plane can set this to move deferred provider downloads
+    under scheduler download-stage limits.
+    """
+    global _DEFERRED_DOWNLOAD_SCHEDULER
+    _DEFERRED_DOWNLOAD_SCHEDULER = scheduler
+
+
+def get_deferred_download_scheduler() -> Any:
+    return _DEFERRED_DOWNLOAD_SCHEDULER
 
 
 def _register_mesh_event(object_id: str) -> None:
@@ -74,6 +90,90 @@ def wait_for_mesh_ready(object_id: str) -> bool:
         _MESH_READY_EVENTS.pop(object_id, None)
 
     return True
+
+
+def _submit_deferred_download_job(
+    *,
+    scheduler: Any,
+    download_fn: Any,
+    download_kwargs: Dict[str, Any],
+    plan_id: str = "",
+    session_id: str = "",
+    batch_id: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Submit legacy mesh/rest download work to GenerationScheduler if present."""
+    if scheduler is None or not hasattr(scheduler, "submit"):
+        return None
+    try:
+        from plugins.AITool.services.generation_provider_adapter import (
+            DeferredDownloadProvider,
+            ProviderStageRunner,
+        )
+    except Exception:
+        try:
+            from services.generation_provider_adapter import (  # type: ignore
+                DeferredDownloadProvider,
+                ProviderStageRunner,
+            )
+        except Exception:
+            return {
+                "job_id": "",
+                "status": "scheduler_adapter_unavailable",
+                "error": "DeferredDownloadProvider adapter is unavailable",
+            }
+
+    provider = DeferredDownloadProvider(download_fn)
+    runner = ProviderStageRunner(provider)
+    stage_handlers = runner.stage_handlers()
+    payload = {
+        "job_type": "provider_deferred_download",
+        "plan_id": plan_id,
+        "session_id": session_id,
+        "batch_id": batch_id,
+        "download_kwargs": dict(download_kwargs),
+        "_runtime_context": {
+            "generation_provider": provider,
+            "stage_handlers": stage_handlers,
+            "stage_order": ("download",),
+        },
+    }
+    return scheduler.submit(payload)
+
+
+def _deferred_download_control(
+    *,
+    scheduler: Any,
+    scheduled: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Return safe execution policy for deferred mesh/rest downloads.
+
+    If a scheduler is injected, provider downloads must not silently fall back
+    to ad-hoc background threads. A queue-full scheduler response is backpressure,
+    not permission to bypass the scheduler.
+    """
+    if scheduled and scheduled.get("job_id"):
+        return {
+            "mode": "scheduled",
+            "start_legacy_thread": False,
+            "job_id": str(scheduled.get("job_id") or ""),
+            "status": str(scheduled.get("status") or "queued"),
+            "error": "",
+        }
+    if scheduler is not None and hasattr(scheduler, "submit"):
+        return {
+            "mode": "rejected",
+            "start_legacy_thread": False,
+            "job_id": "",
+            "status": str((scheduled or {}).get("status") or "rejected"),
+            "error": str((scheduled or {}).get("error") or "deferred download scheduler rejected job"),
+        }
+    return {
+        "mode": "legacy_thread",
+        "start_legacy_thread": True,
+        "job_id": "",
+        "status": "legacy_thread",
+        "error": "",
+    }
 
 
 def _sanitize_name(s: str, allow_spaces: bool = False) -> str:
@@ -542,31 +642,65 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
             model_folder_relative = _to_repo_relative_path(str(object_dir), repo_root)
 
             # 启动后台线程继续下载 mesh 等，并注册到资源管理器
+            mesh_download_control = {
+                "mode": "none",
+                "job_id": "",
+                "status": "not_required",
+                "error": "",
+            }
             if rest_items:
                 # 在线程启动前注册 Event，保证 wait 方不会错过信号
                 _register_mesh_event(object_dir_name)
-                bg_thread = threading.Thread(
-                    target=_download_rest_files_async,
-                    args=(
+                scheduler = get_deferred_download_scheduler()
+                download_kwargs = {
+                    "object_dir": object_dir,
+                    "repo_root": repo_root,
+                    "downloads": rest_items,
+                    "object_dir_name": object_dir_name,
+                    "model_object_id": mesh_object_id,
+                    "mode": mode,
+                    "geometry_file_format": geometry_file_format,
+                    "tier": tier,
+                    "quality": quality,
+                    "batch_tag": batch_tag,
+                    "session_id": session_id,
+                    "registry": registry,
+                }
+                scheduled = _submit_deferred_download_job(
+                    scheduler=scheduler,
+                    download_fn=_download_rest_files_async,
+                    download_kwargs=download_kwargs,
+                    session_id=session_id,
+                    batch_id=object_dir_name,
+                )
+                mesh_download_control = _deferred_download_control(
+                    scheduler=scheduler,
+                    scheduled=scheduled,
+                )
+                if mesh_download_control["mode"] == "scheduled":
+                    logger.info(
+                        "Rodin 3D mesh 下载已提交 GenerationScheduler: %s, job=%s, resources=%d",
                         object_dir,
-                        repo_root,
-                        rest_items,
-                        object_dir_name,
-                        mesh_object_id,
-                        mode,
-                        geometry_file_format,
-                        tier,
-                        quality,
-                        batch_tag,
-                        session_id,
-                        registry,
-                    ),
-                    daemon=True,
-                )
-                bg_thread.start()
-                logger.info(
-                    f"Rodin 3D 后台异步任务已启动: {object_dir}, 将下载并注册 {len(rest_items)} 个资源"
-                )
+                        mesh_download_control["job_id"],
+                        len(rest_items),
+                    )
+                elif mesh_download_control["start_legacy_thread"]:
+                    bg_thread = threading.Thread(
+                        target=_download_rest_files_async,
+                        kwargs=download_kwargs,
+                        daemon=True,
+                    )
+                    bg_thread.start()
+                    logger.info(
+                        f"Rodin 3D 后台异步任务已启动: {object_dir}, 将下载并注册 {len(rest_items)} 个资源"
+                    )
+                else:
+                    _signal_mesh_ready(object_dir_name)
+                    logger.warning(
+                        "Rodin 3D mesh 下载未启动：GenerationScheduler 拒绝任务 status=%s error=%s",
+                        mesh_download_control["status"],
+                        mesh_download_control["error"],
+                    )
 
             # ---- 构造最终返回 ----
             return build_success_result(
@@ -579,6 +713,10 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
                     "task_uuid": result.get("task_uuid"),
                     "preview_count": len(preview_parts),
                     "has_mesh_pending": len(rest_items) > 0,
+                    "mesh_download_mode": mesh_download_control["mode"],
+                    "mesh_download_job_id": mesh_download_control["job_id"],
+                    "mesh_download_status": mesh_download_control["status"],
+                    "mesh_download_error": mesh_download_control["error"],
                 },
             ).to_envelope(interface_type="media")
 
@@ -1022,27 +1160,61 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
             model_folder_relative = _to_repo_relative_path(str(object_dir), repo_root)
 
             # 后台异步下载 mesh
+            mesh_download_control = {
+                "mode": "none",
+                "job_id": "",
+                "status": "not_required",
+                "error": "",
+            }
             if rest_items:
                 _register_mesh_event(object_dir_name)
-                bg_thread = threading.Thread(
-                    target=_hunyuan_download_rest_files_async,
-                    args=(
+                scheduler = get_deferred_download_scheduler()
+                download_kwargs = {
+                    "object_dir": object_dir,
+                    "repo_root": repo_root,
+                    "downloads": rest_items,
+                    "object_dir_name": object_dir_name,
+                    "mode": mode,
+                    "result_format": actual_format,
+                    "batch_tag": batch_tag,
+                    "session_id": session_id,
+                    "registry": registry,
+                }
+                scheduled = _submit_deferred_download_job(
+                    scheduler=scheduler,
+                    download_fn=_hunyuan_download_rest_files_async,
+                    download_kwargs=download_kwargs,
+                    session_id=session_id,
+                    batch_id=object_dir_name,
+                )
+                mesh_download_control = _deferred_download_control(
+                    scheduler=scheduler,
+                    scheduled=scheduled,
+                )
+                if mesh_download_control["mode"] == "scheduled":
+                    _logger.info(
+                        "混元3D mesh 下载已提交 GenerationScheduler: %s, job=%s, resources=%d",
                         object_dir,
-                        repo_root,
-                        rest_items,
-                        object_dir_name,
-                        mode,
-                        actual_format,
-                        batch_tag,
-                        session_id,
-                        registry,
-                    ),
-                    daemon=True,
-                )
-                bg_thread.start()
-                _logger.info(
-                    f"混元3D后台异步任务已启动: {object_dir}, 将下载并注册 {len(rest_items)} 个资源"
-                )
+                        mesh_download_control["job_id"],
+                        len(rest_items),
+                    )
+                elif mesh_download_control["start_legacy_thread"]:
+                    bg_thread = threading.Thread(
+                        target=_hunyuan_download_rest_files_async,
+                        kwargs=download_kwargs,
+                        daemon=True,
+                    )
+                    bg_thread.start()
+                    _logger.info(
+                        f"混元3D后台异步任务已启动: {object_dir}, 将下载并注册 {len(rest_items)} 个资源"
+                    )
+                else:
+                    _signal_mesh_ready(object_dir_name)
+                    _logger.warning(
+                        "混元3D mesh 下载未启动：GenerationScheduler 拒绝任务 status=%s error=%s",
+                        mesh_download_control["status"],
+                        mesh_download_control["error"],
+                    )
 
             return build_success_result(
                 parts=preview_parts,
@@ -1052,6 +1224,10 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
                     "task_uuid": result.get("task_uuid"),
                     "preview_count": len(preview_parts),
                     "has_mesh_pending": len(rest_items) > 0,
+                    "mesh_download_mode": mesh_download_control["mode"],
+                    "mesh_download_job_id": mesh_download_control["job_id"],
+                    "mesh_download_status": mesh_download_control["status"],
+                    "mesh_download_error": mesh_download_control["error"],
                 },
             ).to_envelope(interface_type="media")
 
