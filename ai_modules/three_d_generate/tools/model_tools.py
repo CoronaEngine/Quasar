@@ -28,6 +28,22 @@ import urllib.parse
 _WIN_INVALID = r'[<>:"/\\|?*\x00-\x1F]'
 logger = logging.getLogger(__name__)
 
+
+def _is_placeholder_api_key(value: str) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    compact = re.sub(r"[^a-z0-9]+", "", text)
+    return compact in {
+        "yourapikey",
+        "yourapikeyhere",
+        "apikey",
+        "testkey",
+        "placeholder",
+        "changeme",
+    } or "yourapikey" in compact
+
+
 # ---------------------------------------------------------------------------
 # Mesh 下载完成 Event 注册表
 # ---------------------------------------------------------------------------
@@ -343,6 +359,8 @@ def load_3d_tools(config: AIConfig) -> List[StructuredTool]:
         raise RuntimeError("Rodin base_url 缺失：请在 settings.rodin_3d.base_url 配置")
     if not api_key:
         raise RuntimeError("Rodin api_key 缺失：请在 settings.rodin_3d.api_key 配置")
+    if _is_placeholder_api_key(api_key):
+        raise RuntimeError("Rodin api_key 仍是占位值：请在 settings.rodin_3d.api_key 配置真实密钥")
 
     client = Rodin3DClient(
         base_url=base_url,
@@ -782,6 +800,7 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
         all_keys.extend(str(k).strip() for k in api_keys_cfg if str(k).strip())
     if api_key and api_key not in all_keys:
         all_keys.append(api_key)
+    all_keys = [k for k in all_keys if not _is_placeholder_api_key(k)]
     if not all_keys:
         raise RuntimeError(
             "混元3D api_key 缺失：请在 settings.hunyuan3d.api_key 或 api_keys 中配置"
