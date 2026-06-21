@@ -202,8 +202,8 @@ def _handle_3d_generate_inner(
             )
             raise ValueError("缺少 3D 生成输入：llm_content(text/image) 或 images/image_path/image_url/prompt")
 
-        # 加载 3D tools
-        from .tools.model_tools import load_3d_tools, load_hunyuan3d_tools
+        # 加载 3D tools。正式试验只使用混元3D，不回退 Rodin。
+        from .tools.model_tools import load_hunyuan3d_tools
 
         # 优先尝试混元3D，如果配置了的话
         tools = []
@@ -215,15 +215,10 @@ def _handle_3d_generate_inner(
                 tool_name = "hunyuan_generate_3d"
                 logger.info("使用混元3D引擎")
         except Exception as e:
-            logger.debug("混元3D 未配置或加载失败，回退到 Rodin: %s", e)
+            logger.warning("混元3D 未配置或加载失败；Rodin fallback 已关闭: %s", e)
 
         if not tools:
-            tools = load_3d_tools(cfg)
-            tool_name = "rodin_generate_3d"
-            logger.info("使用 Rodin 3D引擎")
-
-        if not tools:
-            raise RuntimeError("3D 生成功能未启用或配置不完整")
+            raise RuntimeError("混元 3D 服务不可用，本次模型生成无法继续；Rodin fallback 已关闭")
 
         selected_tool = pick_tool(tools, [tool_name])
 

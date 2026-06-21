@@ -205,18 +205,9 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
 
 # -----------------------------------------------------------------------
 # 3D 生成工具（Rodin）
+# 正式试验不使用 Rodin，避免未配置 api_key 时产生工具加载噪音。
 # -----------------------------------------------------------------------
-    from ..ai_modules.three_d_generate.tools.model_tools import load_3d_tools
-
-    registry.register_loader(
-        loader=load_3d_tools,
-        category=ToolCategory.SCENE,
-        dependencies=[
-            # ToolDependency(DependencyType.CONFIG_PROVIDER, provider="rodin"),
-        ],
-        requires_config=True,
-        source="tools.model_tools",
-    )
+    logger.info("Rodin 3D loader disabled for formal validation profile")
 
 # -----------------------------------------------------------------------
 # 3D 生成工具（混元3D）
@@ -233,16 +224,9 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
 
 # -----------------------------------------------------------------------
 #  物体识别工具（Qwen3-VL-Embedding + sqlite-vec）
+# 正式试验不使用 Dashscope embedding/search，避免未配置 key 时产生 401。
 # -----------------------------------------------------------------------
-    from ..ai_modules.object_recognition.base import load_recognition_tools
-
-    registry.register_loader(
-        loader=load_recognition_tools,
-        category=ToolCategory.SCENE,
-        dependencies=[],
-        requires_config=True,
-        source="tools.base",
-    )
+    logger.info("object recognition embedding/search loader disabled for formal validation profile")
 
 # -----------------------------------------------------------------------
 #  场景拆解工具（breakdown）
