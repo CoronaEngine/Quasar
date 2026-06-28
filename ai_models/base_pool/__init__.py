@@ -9,7 +9,7 @@
    - 多供应商适配器
 
 2. 降级模式（未检测到账号池模块）：
-   - 使用旧客户端单例 (client_image.py, client_speech.py, 等)
+   - 使用旧客户端单例 (client_dmx.py, client_speech.py, 等)
    - 从 AIConfig 自动加载配置
    - 提供相同的接口，对工具层透明
 

@@ -7,7 +7,7 @@ from ...providers.configs.dataclasses import ProviderConfig
 
 
 # 自定义 User-Agent，避免 OpenAI SDK 默认的 "OpenAI/Python" User-Agent 被某些 API 代理商拦截
-# lingya 等代理商会检测 "OpenAI/Python" User-Agent 并返回 402 错误
+# 部分代理商会检测 "OpenAI/Python" User-Agent 并返回 402 错误
 _CUSTOM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 

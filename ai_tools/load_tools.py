@@ -204,12 +204,6 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
     )
 
 # -----------------------------------------------------------------------
-# 3D 生成工具（Rodin）
-# 正式试验不使用 Rodin，避免未配置 api_key 时产生工具加载噪音。
-# -----------------------------------------------------------------------
-    logger.info("Rodin 3D loader disabled for formal validation profile")
-
-# -----------------------------------------------------------------------
 # 3D 生成工具（混元3D）
 # -----------------------------------------------------------------------
     from ..ai_modules.three_d_generate.tools.model_tools import load_hunyuan3d_tools
@@ -238,7 +232,6 @@ def _register_builtin_loaders(registry: ToolRegistry) -> None:
             loader=load_scene_breakdown_tools,
             category=ToolCategory.SCENE,
             dependencies=[
-                # ToolDependency(DependencyType.CONFIG_PROVIDER, provider="rodin"),
             ],
             requires_config=True,
             source="tools.scene_breakdown_tools",

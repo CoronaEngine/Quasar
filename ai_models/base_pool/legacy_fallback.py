@@ -32,7 +32,6 @@ from .responses import (
     ChatResult,
 )
 from ...ai_modules.providers.configs.dataclasses import ProviderConfig
-from ...ai_modules.image_generate.tools.client_image import LingyaImageClient
 # from ...ai_modules.image_generate.tools.client_grsai import GrsaiImageClient  # grsai 已弃用
 from ...ai_modules.image_generate.tools.client_dmx import DmxImageClient
 from ...ai_modules.speech_generate.configs.dataclasses import SpeechAudioConfig, SpeechAppConfig
@@ -56,7 +55,6 @@ _IMAGE_CLIENT_CLASSES: Dict[str, type] = {
     # provider 名称与 image.provider 对齐
     # "grsai_image": GrsaiImageClient,  # grsai 已弃用，改用 dmx
     "dmx_image": DmxImageClient,
-    "lingya_image": LingyaImageClient,
 }
 
 
@@ -75,7 +73,11 @@ def _get_legacy_image_client():
         return None
 
     key = (image_cfg.provider or "").strip().lower()
-    client_cls = _IMAGE_CLIENT_CLASSES.get(key, LingyaImageClient)
+    client_cls = _IMAGE_CLIENT_CLASSES.get(key)
+    if client_cls is None:
+        logger.warning("Unsupported legacy image provider: %s", key)
+        return None
+
     return client_cls(
         provider=provider,
         model=image_cfg.model,

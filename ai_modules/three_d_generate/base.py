@@ -81,7 +81,7 @@ def _parse_3d_inputs(request_data: Dict[str, Any]) -> Tuple[Optional[str], Optio
       - fileid://...
       - http(s)://...
       - 本地路径
-    具体如何转成 multipart 二进制交给 Rodin3DClient 去处理（推荐在 client 里做）。
+    具体如何转成服务端请求格式交给 3D client 去处理。
     """
     llm_content = _normalize_llm_content(request_data)
 
@@ -202,7 +202,7 @@ def _handle_3d_generate_inner(
             )
             raise ValueError("缺少 3D 生成输入：llm_content(text/image) 或 images/image_path/image_url/prompt")
 
-        # 加载 3D tools。正式试验只使用混元3D，不回退 Rodin。
+        # 加载 3D tools。当前只使用混元3D。
         from .tools.model_tools import load_hunyuan3d_tools
 
         # 优先尝试混元3D，如果配置了的话
@@ -215,10 +215,10 @@ def _handle_3d_generate_inner(
                 tool_name = "hunyuan_generate_3d"
                 logger.info("使用混元3D引擎")
         except Exception as e:
-            logger.warning("混元3D 未配置或加载失败；Rodin fallback 已关闭: %s", e)
+            logger.warning("混元3D 未配置或加载失败: %s", e)
 
         if not tools:
-            raise RuntimeError("混元 3D 服务不可用，本次模型生成无法继续；Rodin fallback 已关闭")
+            raise RuntimeError("混元 3D 服务不可用，本次模型生成无法继续")
 
         selected_tool = pick_tool(tools, [tool_name])
 

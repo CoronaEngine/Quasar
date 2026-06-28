@@ -9,7 +9,6 @@
 # """
 #
 # # 旧客户端（供降级模式和直接调用使用）
-# from ai_modules.image_generate.tools.client_image import LingyaImageClient
 # from ai_modules.video_generate.tools.client_video import DashScopeVideoClient
 # from ai_modules.speech_generate.tools.client_speech import TTSClient
 # from ai_modules.music_generate.tools.client_music import SunoMusicClient
@@ -33,7 +32,6 @@
 #     # 旧的直接加载方式（不经过池系统）
 #     "get_chat_model_legacy",
 #     # 旧客户端（供降级模式使用）
-#     "LingyaImageClient",
 #     "DashScopeVideoClient",
 #     "TTSClient",
 #     "SunoMusicClient",

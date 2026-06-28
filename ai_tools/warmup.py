@@ -151,16 +151,16 @@ def warmup_http_clients() -> None:
     预热 HTTP 客户端连接池（第二层，可与存储并行）
 
     预热：
-    - _get_image_http_client(): 图像生成 HTTP 客户端
+    - _get_dmx_http_client(): DMX 图像生成 HTTP 客户端
     - _get_tts_http_client(): TTS HTTP 客户端
     - _get_music_http_client(): 音乐生成 HTTP 客户端
     """
     try:
-        from ..ai_modules.image_generate.tools.client_image import (
-            _get_image_http_client,
+        from ..ai_modules.image_generate.tools.client_dmx import (
+            _get_dmx_http_client,
         )
 
-        _get_image_http_client()
+        _get_dmx_http_client()
     except Exception as e:
         logger.debug(f"图像客户端预热跳过: {e}")
 
