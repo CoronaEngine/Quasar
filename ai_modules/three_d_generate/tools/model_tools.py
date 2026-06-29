@@ -19,7 +19,7 @@ from ....ai_tools.response_adapter import (
     build_error_result,
 )
 from ....ai_config.paths_config import get_project_models_dir, _get_active_project_path
-from .client_hunyuan3d import Hunyuan3DClient
+from .client_hunyuan3d import Hunyuan3DClient, sanitize_url_for_log
 
 import re
 import urllib.parse
@@ -587,10 +587,16 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
                                 "short_id": "base" if typ == "mesh" else typ,
                             },
                         )
-                        _logger.debug(f"混元3D后台下载+注册完成: {url} -> {relative_path} (file_id={file_id})")
+                        _logger.debug(
+                            "混元3D后台下载+注册完成: %s -> %s (file_id=%s)",
+                            sanitize_url_for_log(url), relative_path, file_id,
+                        )
 
                 except Exception as e:
-                    _logger.warning(f"混元3D后台下载/注册失败: {url}, err={e}")
+                    _logger.warning(
+                        "混元3D后台下载/注册失败: %s, err=%s",
+                        sanitize_url_for_log(url), e,
+                    )
 
             _logger.info(f"混元3D后台异步下载完成: {object_dir}, mesh count={mesh_count}")
 
@@ -747,10 +753,16 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
                         )
                     )
 
-                    _logger.debug(f"混元3D预览图下载完成: {url} -> {relative_path}")
+                    _logger.debug(
+                        "混元3D预览图下载完成: %s -> %s",
+                        sanitize_url_for_log(url), relative_path,
+                    )
 
                 except Exception as e:
-                    _logger.warning(f"混元3D预览图下载失败: {url}, err={e}")
+                    _logger.warning(
+                        "混元3D预览图下载失败: %s, err=%s",
+                        sanitize_url_for_log(url), e,
+                    )
 
             if not preview_parts and not rest_items:
                 raise RuntimeError("未能获取任何下载资源")

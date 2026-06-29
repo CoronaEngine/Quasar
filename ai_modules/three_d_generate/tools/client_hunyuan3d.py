@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import threading
+from urllib.parse import urlsplit, urlunsplit
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -21,6 +22,30 @@ import httpx
 from ....ai_models.remote_task_runner import RemoteTaskRunner
 
 logger = logging.getLogger(__name__)
+
+
+def sanitize_url_for_log(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if not text.startswith(("http://", "https://")):
+        return text
+    try:
+        parts = urlsplit(text)
+        suffix = "?<redacted>" if parts.query else ""
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")) + suffix
+    except Exception:
+        return re.sub(r"([?&][^=&#]+)=([^&#]+)", r"\1=<redacted>", text)
+
+
+def sanitize_hunyuan_log_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: sanitize_hunyuan_log_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_hunyuan_log_payload(item) for item in value]
+    if isinstance(value, str) and value.startswith(("http://", "https://")):
+        return sanitize_url_for_log(value)
+    return value
 
 
 class Hunyuan3DClient:
@@ -293,7 +318,11 @@ class Hunyuan3DClient:
                 poll=lambda job_id: self.query_job(job_id, model=model),
             )
             resp = task.payload
-            logger.info("混元3D 任务完成原始响应: id=%s resp=%s", task.task_id, json.dumps(resp, ensure_ascii=False)[:4000])
+            logger.debug(
+                "混元3D 任务完成响应摘要: id=%s resp=%s",
+                task.task_id,
+                json.dumps(sanitize_hunyuan_log_payload(resp), ensure_ascii=False)[:4000],
+            )
             downloads = self._extract_downloads(resp)
             if not downloads:
                 raise RuntimeError(f"混元3D 任务完成但无下载文件: id={task.task_id}, resp_keys={list(resp.keys())}")
@@ -368,6 +397,6 @@ class Hunyuan3DClient:
         if not downloads:
             logger.error("混元3D 无法提取下载文件, data type=%s, data=%s",
                          type(raw_data).__name__,
-                         json.dumps(raw_data, ensure_ascii=False)[:3000] if raw_data else "None")
+                         json.dumps(sanitize_hunyuan_log_payload(raw_data), ensure_ascii=False)[:3000] if raw_data else "None")
 
         return downloads
