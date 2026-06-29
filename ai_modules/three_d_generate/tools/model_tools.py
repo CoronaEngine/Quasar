@@ -215,6 +215,21 @@ def _safe_dirname(s: str) -> str:
     return _sanitize_name(s, allow_spaces=False)
 
 
+def _hunyuan_model_dir_label(
+    *,
+    prompt: Optional[str],
+    object_id: Optional[str] = None,
+    object_name: Optional[str] = None,
+    timestamp: Optional[str] = None,
+) -> str:
+    """Return a stable, human object label for generated model folders."""
+    for raw in (object_name, object_id):
+        label = _safe_dirname(str(raw or "")[:48])
+        if label and label != "task":
+            return label
+    return f"hunyuan_{timestamp or time.strftime('%Y%m%d_%H%M%S')}"
+
+
 def _safe_filename(name: str) -> str:
     """文件名清理（保留单个空格）"""
     return _sanitize_name(name, allow_spaces=True)
@@ -322,6 +337,8 @@ class Hunyuan3DGenerate3DInput(BaseModel):
         default=None,
         description="文本提示词。mode=text_to_3d 时必填",
     )
+    object_id: Optional[str] = Field(default=None, description="生成物体的稳定 ID，用于命名本地目录")
+    object_name: Optional[str] = Field(default=None, description="生成物体的显示名，用于命名本地目录")
 
     result_format: str = Field(default="GLB", description="输出格式：GLB, OBJ, STL, USDZ, FBX")
     enable_pbr: bool = Field(default=False, description="是否开启 PBR 材质")
@@ -593,6 +610,8 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
         model_version: str = "",
         face_count: Optional[int] = None,
         download_dir: Optional[str] = None,
+        object_id: Optional[str] = None,
+        object_name: Optional[str] = None,
     ) -> str:
         _logger = logging.getLogger(__name__)
         try:
@@ -648,12 +667,11 @@ def load_hunyuan3d_tools(config: AIConfig) -> List[StructuredTool]:
             if not downloads:
                 raise RuntimeError("混元3D 未返回任何可下载文件")
 
-            # 目录名优先使用 prompt 文本（截取前30字符），否则用时间戳
-            if prompt:
-                dir_label = _safe_dirname(prompt[:30])
-            else:
-                dir_label = f"hunyuan_{time.strftime('%Y%m%d_%H%M%S')}"
-            object_dir_name = dir_label or "模型"
+            object_dir_name = _hunyuan_model_dir_label(
+                prompt=prompt,
+                object_id=object_id,
+                object_name=object_name,
+            )
 
             original_dir_name = object_dir_name
             suffix_idx = 1
