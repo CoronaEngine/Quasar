@@ -14,10 +14,11 @@ import logging
 import os
 import re
 import threading
-import time
 from typing import Any, Dict, List, Optional
 
 import httpx
+
+from ....ai_models.remote_task_runner import RemoteTaskRunner
 
 logger = logging.getLogger(__name__)
 
@@ -276,54 +277,29 @@ class Hunyuan3DClient:
         {"task_uuid": ..., "downloads": [{"name": ..., "url": ...}, ...]}
         """
         with self._generation_semaphore:
-            job_id = self.submit_job(
-                images=images, prompt=prompt,
-                result_format=result_format, enable_pbr=enable_pbr,
-                face_count=face_count, generate_type=generate_type,
-                model=model,
+            runner = RemoteTaskRunner(
+                provider_name="hunyuan3d",
+                poll_interval=poll_interval,
+                poll_timeout=poll_timeout,
             )
+            task = runner.run(
+                provider_task_label="混元3D",
+                submit=lambda: self.submit_job(
+                    images=images, prompt=prompt,
+                    result_format=result_format, enable_pbr=enable_pbr,
+                    face_count=face_count, generate_type=generate_type,
+                    model=model,
+                ),
+                poll=lambda job_id: self.query_job(job_id, model=model),
+            )
+            resp = task.payload
+            logger.info("混元3D 任务完成原始响应: id=%s resp=%s", task.task_id, json.dumps(resp, ensure_ascii=False)[:4000])
+            downloads = self._extract_downloads(resp)
+            if not downloads:
+                raise RuntimeError(f"混元3D 任务完成但无下载文件: id={task.task_id}, resp_keys={list(resp.keys())}")
 
-            start = time.time()
-            last_status = None
-
-            while True:
-                if time.time() - start > poll_timeout:
-                    raise TimeoutError(f"混元3D 任务超时（>{poll_timeout}s），id={job_id}")
-
-                resp = self.query_job(job_id, model=model)
-
-                # 兼容多种状态字段和大小写
-                status_raw = (
-                    resp.get("status")
-                    or resp.get("Status")
-                    or (resp.get("Response", {}) or {}).get("Status")
-                    or ""
-                )
-                status = status_raw.lower()
-
-                if status != last_status:
-                    last_status = status
-                    logger.debug("混元3D status id=%s status=%s", job_id, status)
-
-                if status in ("fail", "failed", "error"):
-                    error_msg = (
-                        resp.get("error_message")
-                        or resp.get("ErrorMessage")
-                        or (resp.get("Response", {}) or {}).get("ErrorMessage")
-                        or "未知错误"
-                    )
-                    raise RuntimeError(f"混元3D 任务失败: id={job_id}, error={error_msg}")
-
-                if status in ("done", "completed", "succeed", "success"):
-                    logger.info("混元3D 任务完成原始响应: id=%s resp=%s", job_id, json.dumps(resp, ensure_ascii=False)[:4000])
-                    downloads = self._extract_downloads(resp)
-                    if not downloads:
-                        raise RuntimeError(f"混元3D 任务完成但无下载文件: id={job_id}, resp_keys={list(resp.keys())}")
-
-                    logger.info("混元3D 任务完成: id=%s, downloads=%d", job_id, len(downloads))
-                    return {"task_uuid": job_id, "downloads": downloads}
-
-                time.sleep(poll_interval)
+            logger.info("混元3D 任务完成: id=%s, downloads=%d", task.task_id, len(downloads))
+            return {"task_uuid": task.task_id, "downloads": downloads}
 
     def _extract_downloads(self, resp: Dict[str, Any]) -> List[Dict[str, str]]:
         """从查询响应中提取下载文件列表"""

@@ -736,7 +736,10 @@ def create_legacy_task(
     elif category == MediaCategory.TEXT and isinstance(request, ChatRequest):
         return create_legacy_chat_task(request, category=MediaCategory.TEXT)
     elif category == MediaCategory.OMNI and isinstance(request, OmniRequest):
-        return create_legacy_omni_task(request)
+        logger.warning(
+            "Omni legacy fallback is disabled: multimodal review requires a polling-capable pool backend"
+        )
+        return None
     elif category == MediaCategory.DETECTION and isinstance(request, DetectionRequest):
         return create_legacy_detection_task(request)
 

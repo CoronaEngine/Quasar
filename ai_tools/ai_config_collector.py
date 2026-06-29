@@ -15,9 +15,10 @@ class ConfigCollector:
 
     @staticmethod
     def _is_builtin_setting_source(module_name: str) -> bool:
-        return module_name.startswith("ai_modules.") and module_name.endswith(
-            ".configs.settings"
-        )
+        return (
+            module_name.startswith("ai_modules.")
+            or module_name.startswith("Quasar.ai_modules.")
+        ) and module_name.endswith(".configs.settings")
 
     def _should_replace_setting(self, key: str, new_source: str) -> bool:
         current_source = self._setting_sources.get(key)

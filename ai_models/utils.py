@@ -19,6 +19,7 @@ from typing import Any, Callable, TypeVar, Tuple, Optional
 from PIL import Image
 
 from ..ai_modules.providers.configs.dataclasses import ProviderConfig
+from .remote_task_runner import RemoteTaskRunner
 
 
 # ========== 通用客户端基类 ==========
@@ -287,47 +288,32 @@ class TaskPoller:
                 f"轮询间隔: {self.interval}秒, 超时时间: {self.timeout}秒"
             )
 
-        start_time = time.time()
-        attempts = 0
-
-        while True:
-            attempts += 1
-            elapsed = time.time() - start_time
-
-            if elapsed > self.timeout:
-                raise TimeoutError(f"任务 {task_id} 超时（已等待 {elapsed:.1f} 秒）")
-
+        def poll_once(current_task_id: str) -> Tuple[str, Any, Optional[str]]:
             try:
-                status, result, error_msg = check_status(task_id)
+                return check_status(current_task_id)
             except Exception as e:
-                # 检查状态本身出错，视为任务失败或临时错误？
-                # 这里假设是临时错误，打印警告并重试，或者直接抛出？
-                # 为了稳健性，如果是网络错误等，应该重试。
-                # 这里简单处理：如果 check_status 抛出异常，视为查询失败，继续轮询
                 if self.verbose:
                     self.logger.warning(f"查询状态异常: {e}，继续轮询...")
-                time.sleep(self.interval)
-                continue
+                return ("PROCESSING", None, str(e))
 
-            if self.verbose:
-                self._log_progress(attempts, elapsed, status)
-
-            if status == "SUCCEEDED":
-                if self.verbose:
-                    self.logger.info("任务完成！")
-                return result
-
-            elif status == "FAILED":
-                msg = error_msg or "未知错误"
-                raise RuntimeError(f"任务失败: {msg}")
-
-            elif status in ("PENDING", "RUNNING", "PROCESSING"):  # 兼容 PROCESSING
-                time.sleep(self.interval)
-
-            else:
-                if self.verbose:
-                    self.logger.warning(f"警告: 未知任务状态 '{status}'，继续轮询...")
-                time.sleep(self.interval)
+        runner = RemoteTaskRunner(
+            provider_name="legacy",
+            poll_interval=float(self.interval),
+            poll_timeout=float(self.timeout),
+        )
+        task_result = runner.run(
+            provider_task_label="legacy task",
+            submit=lambda: task_id,
+            poll=poll_once,
+            status=lambda payload: payload[0],
+            result=lambda payload: payload[1],
+            error=lambda payload: payload[2],
+            success_statuses={"SUCCEEDED"},
+            failure_statuses={"FAILED"},
+        )
+        if self.verbose:
+            self.logger.info("任务完成！")
+        return task_result.payload
 
     def _log_progress(self, attempts: int, elapsed: float, status: str) -> None:
         """打印轮询进度"""
